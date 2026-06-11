@@ -6,7 +6,8 @@ Typical deployment: run the API **inside Colima** (``colima ssh``) or on a Linux
 where ``DOCKER_HOST`` already points — same machine then runs Firecracker sandboxes.
 
 Warm pool: ``MultiWarmSandboxPool`` is unchanged; it still calls ``SandboxManager``,
-which uses this plane when ``SANDBOX_ENGINE=firecracker``.
+which uses this plane when ``SANDBOX_ENGINE=firecracker``. Full VM snapshots use
+Firecracker ``/snapshot/create`` and ``/snapshot/load`` (see ``docs/FIRECRACKER.md``).
 """
 
 from __future__ import annotations
@@ -17,6 +18,8 @@ import json
 import logging
 import os
 import random
+import re
+import sys
 import shlex
 import shutil
 import socket
@@ -25,6 +28,7 @@ import tempfile
 import threading
 import time
 import uuid
+import urllib.parse
 from dataclasses import dataclass
 from typing import Any, Dict, Iterator, List, Optional
 
@@ -84,6 +88,10 @@ class _FcUnixClient:
             conn.close()
 
 
+# Prefix for ``image_ref`` / ``from_snapshot_image`` pointing at a snapshot bundle directory.
+FC_BUNDLE_SCHEME = "fc-bundle:"
+
+
 @dataclass
 class _VmState:
     proc: subprocess.Popen
@@ -93,6 +101,7 @@ class _VmState:
     tap_name: str
     ssh_user: str
     ssh_key: str
+    slot: int = 0
 
 
 class FirecrackerVmmPlane:
@@ -174,13 +183,45 @@ class FirecrackerVmmPlane:
         )
 
     def _wait_ssh(self, st: _VmState, deadline_s: float = 120.0) -> bool:
+        poll = float(getattr(self._cfg, "FIRECRACKER_SSH_POLL_SEC", 0.25) or 0.25)
+        poll = max(0.05, min(2.0, poll))
         t0 = time.monotonic()
         while time.monotonic() - t0 < deadline_s:
-            r = self._ssh_run(st, ["true"], timeout=10.0)
+            remaining = deadline_s - (time.monotonic() - t0)
+            if remaining <= 0:
+                break
+            r = self._ssh_run(st, ["true"], timeout=min(10.0, max(0.5, remaining)))
             if r.returncode == 0:
                 return True
-            time.sleep(1.0)
+            time.sleep(poll)
         return False
+
+    def _copy_rootfs_into_place(self, root_src: str, root_rw: str) -> bool:
+        """Copy golden ext4 into per-VM path; prefer Linux CoW ``cp --reflink=auto`` when enabled."""
+        use_reflink = bool(getattr(self._cfg, "FIRECRACKER_ROOTFS_FAST_COPY", True))
+        if use_reflink and sys.platform.startswith("linux"):
+            try:
+                if os.path.lexists(root_rw):
+                    os.unlink(root_rw)
+            except OSError:
+                pass
+            try:
+                r = subprocess.run(
+                    ["cp", "--reflink=auto", root_src, root_rw],
+                    capture_output=True,
+                    timeout=7200,
+                    check=False,
+                )
+                if r.returncode == 0 and os.path.isfile(root_rw) and os.path.getsize(root_rw) > 0:
+                    return True
+            except (OSError, subprocess.SubprocessError) as ex:
+                logger.debug("Firecracker: reflink copy unavailable (%s); falling back to shutil.copy2", ex)
+        try:
+            shutil.copy2(root_src, root_rw)
+        except OSError as ex:
+            logger.error("Firecracker: copy rootfs failed: %s", ex)
+            return False
+        return bool(os.path.isfile(root_rw) and os.path.getsize(root_rw) > 0)
 
     def _fc_put(self, api_sock: str, path: str, body: dict) -> tuple[int, bytes]:
         return _FcUnixClient(api_sock).request("PUT", path, body)
@@ -188,7 +229,229 @@ class FirecrackerVmmPlane:
     def _fc_patch(self, api_sock: str, path: str, body: dict) -> tuple[int, bytes]:
         return _FcUnixClient(api_sock).request("PATCH", path, body)
 
+    def _decode_fc_bundle_dir(self, bundle_ref: str) -> Optional[str]:
+        if not bundle_ref.startswith(FC_BUNDLE_SCHEME):
+            return None
+        raw = bundle_ref[len(FC_BUNDLE_SCHEME) :].strip()
+        if not raw:
+            return None
+        return os.path.abspath(urllib.parse.unquote(raw))
+
+    def commit_filesystem_snapshot(
+        self,
+        container_id: str,
+        repository: str,
+        tag: str,
+        *,
+        pause_during_commit: bool = True,
+        **_kwargs: Any,
+    ) -> Optional[str]:
+        """Full Firecracker microVM snapshot (guest RAM + devices + rootfs copy at pause).
+
+        Returns ``fc-bundle:<urlencoded-abs-path>`` for use as ``from_snapshot_image``.
+        """
+        st = self._get(container_id)
+        if not st:
+            logger.error("Firecracker snapshot: unknown instance %s", container_id)
+            return None
+        base = (getattr(self._cfg, "FIRECRACKER_SNAPSHOT_DIR", None) or "").strip() or os.path.join(
+            os.getcwd(), "fc-snapshots"
+        )
+        safe_tag = re.sub(r"[^a-zA-Z0-9._-]+", "-", tag).strip("-")[:160] or "snap"
+        bundle_dir = os.path.abspath(os.path.join(base, safe_tag))
+        os.makedirs(bundle_dir, mode=0o755, exist_ok=True)
+        state_path = os.path.join(bundle_dir, "vm.snap")
+        mem_path = os.path.join(bundle_dir, "vm.mem")
+        paused = False
+        try:
+            r = self.run_command(container_id, "sync", timeout=120.0)
+            if int(r.get("exit_code") or 0) != 0:
+                logger.warning("Firecracker snapshot: guest sync non-zero: %s", (r.get("stderr") or "")[:500])
+            if pause_during_commit:
+                if not self.pause_instance(container_id):
+                    logger.error("Firecracker snapshot: pause failed for %s", container_id)
+                    return None
+                paused = True
+            code, data = self._fc_put(
+                st.api_sock,
+                "/snapshot/create",
+                {
+                    "snapshot_type": "Full",
+                    "snapshot_path": state_path,
+                    "mem_file_path": mem_path,
+                },
+            )
+            if code not in (200, 201, 204):
+                logger.error("Firecracker snapshot/create failed %s: %r", code, data[:800])
+                return None
+            try:
+                shutil.copy2(os.path.join(st.workdir, "rootfs.ext4"), os.path.join(bundle_dir, "rootfs.ext4"))
+            except OSError as ex:
+                logger.error("Firecracker snapshot: rootfs copy failed: %s", ex)
+                return None
+            fc_ver = ""
+            try:
+                c2, vbody = _FcUnixClient(st.api_sock).request("GET", "/version", None)
+                if c2 == 200 and vbody:
+                    fc_ver = json.loads(vbody.decode("utf-8", errors="replace")).get("firecracker_version", "")
+            except (OSError, json.JSONDecodeError, ValueError):
+                pass
+            manifest = {
+                "backend": "firecracker",
+                "tap_slot": st.slot,
+                "guest_ip": st.guest_ip,
+                "tap_name": st.tap_name,
+                "firecracker_version": fc_ver,
+            }
+            try:
+                with open(os.path.join(bundle_dir, "manifest.json"), "w", encoding="utf-8") as mf:
+                    json.dump(manifest, mf, indent=2)
+            except OSError as ex:
+                logger.error("Firecracker snapshot: manifest write failed: %s", ex)
+                return None
+            return FC_BUNDLE_SCHEME + urllib.parse.quote(bundle_dir, safe="/")
+        finally:
+            if paused:
+                if not self.resume_instance(container_id):
+                    logger.error("Firecracker snapshot: resume failed for %s — instance may stay paused", container_id)
+
+    def _create_vm_from_fc_bundle(self, name: str, config: ContainerConfig, bundle_ref: str) -> Optional[str]:
+        """Boot from a bundle produced by ``commit_filesystem_snapshot``."""
+        if not self.check_docker():
+            return None
+        bundle_dir = self._decode_fc_bundle_dir(bundle_ref)
+        if not bundle_dir or not os.path.isdir(bundle_dir):
+            logger.error("Firecracker restore: invalid bundle ref %r", bundle_ref)
+            return None
+        snap_f = os.path.join(bundle_dir, "vm.snap")
+        mem_f = os.path.join(bundle_dir, "vm.mem")
+        root_golden = os.path.join(bundle_dir, "rootfs.ext4")
+        man_f = os.path.join(bundle_dir, "manifest.json")
+        if not all(os.path.isfile(p) for p in (snap_f, mem_f, root_golden)):
+            logger.error("Firecracker restore: incomplete bundle in %s", bundle_dir)
+            return None
+
+        slot = -1
+        manifest_guest_ip: Optional[str] = None
+        if os.path.isfile(man_f):
+            try:
+                with open(man_f, "r", encoding="utf-8") as mf:
+                    man = json.load(mf)
+                slot = int(man.get("tap_slot", -1))
+                manifest_guest_ip = (man.get("guest_ip") or "").strip() or None
+            except (OSError, ValueError, TypeError, json.JSONDecodeError) as ex:
+                logger.warning("Firecracker restore: manifest read failed: %s", ex)
+                slot = -1
+        if slot < 0:
+            slot = self._next_slot()
+        tap = self._tap_name(slot)
+        guest_ip = manifest_guest_ip or self._guest_ip(slot)
+
+        ssh_key = (getattr(self._cfg, "FIRECRACKER_SSH_KEY", None) or "").strip()
+        ssh_user = (getattr(self._cfg, "FIRECRACKER_SSH_USER", None) or "root").strip() or "root"
+        fc_bin = (getattr(self._cfg, "FIRECRACKER_BINARY", None) or "").strip() or "/usr/local/bin/firecracker"
+        if not os.path.exists(f"/sys/class/net/{tap}"):
+            logger.error("Firecracker restore: tap %r missing (slot=%s)", tap, slot)
+            return None
+
+        vm_token = uuid.uuid4().hex[:12]
+        cid = f"fc-{vm_token}"
+        workdir = tempfile.mkdtemp(prefix=f"fc-{vm_token}-")
+        api_sock = os.path.join(workdir, "api.sock")
+        root_rw = os.path.join(workdir, "rootfs.ext4")
+        try:
+            shutil.copy2(root_golden, root_rw)
+            shutil.copy2(snap_f, os.path.join(workdir, "vm.snap"))
+            shutil.copy2(mem_f, os.path.join(workdir, "vm.mem"))
+        except OSError as ex:
+            logger.error("Firecracker restore: staging copy failed: %s", ex)
+            shutil.rmtree(workdir, ignore_errors=True)
+            return None
+        local_snap = os.path.abspath(os.path.join(workdir, "vm.snap"))
+        local_mem = os.path.abspath(os.path.join(workdir, "vm.mem"))
+
+        fc_cmd = [fc_bin, "--api-sock", api_sock]
+        if str(getattr(self._cfg, "FIRECRACKER_ENABLE_PCI", "")).lower() in ("1", "true", "yes"):
+            fc_cmd.append("--enable-pci")
+        try:
+            proc = subprocess.Popen(
+                fc_cmd,
+                cwd=workdir,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError as ex:
+            logger.error("Firecracker restore: spawn failed: %s", ex)
+            shutil.rmtree(workdir, ignore_errors=True)
+            return None
+
+        for _wait in range(50):
+            if os.path.exists(api_sock):
+                break
+            time.sleep(0.1)
+        if proc.poll() is not None:
+            logger.error("Firecracker restore: firecracker exited before API ready")
+            shutil.rmtree(workdir, ignore_errors=True)
+            return None
+
+        http = _FcUnixClient(api_sock)
+        load_bodies: List[dict] = [
+            {
+                "snapshot_path": local_snap,
+                "mem_file_path": local_mem,
+                "resume_vm": True,
+                "track_dirty_pages": False,
+                "network_overrides": [{"iface_id": "net0", "host_dev_name": tap}],
+            },
+            {
+                "snapshot_path": local_snap,
+                "mem_file_path": local_mem,
+                "resume_vm": True,
+                "track_dirty_pages": False,
+            },
+        ]
+        last_data = b""
+        loaded = False
+        for body in load_bodies:
+            try:
+                code, last_data = http.request("PUT", "/snapshot/load", body)
+                if code in (200, 201, 204):
+                    loaded = True
+                    break
+                logger.warning("Firecracker snapshot/load returned %s: %r", code, last_data[:500])
+            except OSError as ex:
+                logger.warning("Firecracker snapshot/load transport: %s", ex)
+        if not loaded:
+            logger.error("Firecracker restore: snapshot/load failed: %r", last_data[:1200])
+            proc.terminate()
+            shutil.rmtree(workdir, ignore_errors=True)
+            return None
+
+        st = _VmState(
+            proc=proc,
+            api_sock=api_sock,
+            workdir=workdir,
+            guest_ip=guest_ip,
+            tap_name=tap,
+            ssh_user=ssh_user,
+            ssh_key=ssh_key,
+            slot=int(slot),
+        )
+        if not self._wait_ssh(st, deadline_s=90.0):
+            logger.error("Firecracker restore: SSH not up for %s", guest_ip)
+            proc.terminate()
+            shutil.rmtree(workdir, ignore_errors=True)
+            return None
+        with self._lock:
+            self._vms[cid] = st
+        logger.info("Firecracker VM %s restored from bundle guest_ip=%s tap=%s", cid, guest_ip, tap)
+        return cid
+
     def create_container(self, name: str, config: ContainerConfig) -> Optional[str]:
+        ref = (getattr(config, "fc_bundle_ref", None) or "").strip()
+        if ref.startswith(FC_BUNDLE_SCHEME):
+            return self._create_vm_from_fc_bundle(name, config, ref)
         if not self.check_docker():
             return None
         fc_bin = (getattr(self._cfg, "FIRECRACKER_BINARY", None) or "").strip() or "/usr/local/bin/firecracker"
@@ -220,10 +483,7 @@ class FirecrackerVmmPlane:
         workdir = tempfile.mkdtemp(prefix=f"fc-{vm_token}-")
         api_sock = os.path.join(workdir, "api.sock")
         root_rw = os.path.join(workdir, "rootfs.ext4")
-        try:
-            shutil.copy2(root_src, root_rw)
-        except OSError as ex:
-            logger.error("Firecracker: copy rootfs failed: %s", ex)
+        if not self._copy_rootfs_into_place(root_src, root_rw):
             shutil.rmtree(workdir, ignore_errors=True)
             return None
 
@@ -254,10 +514,9 @@ class FirecrackerVmmPlane:
             shutil.rmtree(workdir, ignore_errors=True)
             return None
 
-        
         for _wait in range(50):
             if os.path.exists(api_sock):
-               break
+                break
             time.sleep(0.1)
         if proc.poll() is not None:
             logger.error("Firecracker process exited early (check kernel/rootfs/tap and ``dmesg``)")
@@ -277,7 +536,7 @@ class FirecrackerVmmPlane:
                 "/drives/rootfs",
                 {
                     "drive_id": "rootfs",
-                    "path_on_host": root_rw,
+                    "path_on_host": "rootfs.ext4",
                     "is_root_device": True,
                     "is_read_only": False,
                 },
@@ -320,6 +579,7 @@ class FirecrackerVmmPlane:
             tap_name=tap,
             ssh_user=ssh_user,
             ssh_key=ssh_key,
+            slot=int(slot),
         )
         if not self._wait_ssh(st):
             logger.error("Firecracker: SSH never came up for %s (%s)", cid, guest_ip)

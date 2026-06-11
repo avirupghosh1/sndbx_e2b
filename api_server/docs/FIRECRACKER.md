@@ -30,6 +30,9 @@ This mode runs **Linux KVM microVMs** via the [Firecracker](https://firecracker-
 | `FIRECRACKER_SSH_KEY` | *(required)* | Path to **private** SSH key for the guest. |
 | `FIRECRACKER_SSH_KNOWN_HOSTS` | `/dev/null` | Passed to `ssh`/`scp` (dev default). |
 | `FIRECRACKER_ENABLE_PCI` | `false` | Set `true` only if you pass `--enable-pci` to Firecracker. |
+| `FIRECRACKER_ROOTFS_FAST_COPY` | `true` | On Linux, try ``cp --reflink=auto`` before a full ``shutil.copy2`` of the ext4 (fast on btrfs/xfs CoW). Set `false` to always full-copy. |
+| `FIRECRACKER_SSH_POLL_SEC` | `0.25` | Sleep between SSH probes after `InstanceStart` (clamped `0.05`…`2`). |
+| `FIRECRACKER_SNAPSHOT_DIR` | ``<cwd>/fc-snapshots`` | Directory for full VM snapshot bundles (subfolder per snapshot). |
 
 `SANDBOX_ISOLATION` / gVisor apply **only** to `SANDBOX_ENGINE=docker`.
 
@@ -40,6 +43,8 @@ This mode runs **Linux KVM microVMs** via the [Firecracker](https://firecracker-
 **Docker template warm snapshots** (`docker commit` images) are **not** used under Firecracker. Registered templates get a sentinel warm marker so the pool still keys on `(template_id, cpu, mem, timeout)`; guests boot from **`FIRECRACKER_ROOTFS`** (or a per-request `.ext4` path when `from_snapshot_image` points to a host file).
 
 Keep **`SANDBOX_WARM_POOL_SIZE ≤ FIRECRACKER_TAP_SLOTS`** (and ≤ number of real taps) so each idle sandbox has its own tap/IP.
+
+**Faster pool fill:** set **`SANDBOX_WARM_POOL_PROVISION_CONCURRENCY`** (default `1`) to a small integer (e.g. `2`–`4`) so each segment provisions multiple sandboxes in parallel. Stay within tap slots and host CPU/IO; overlapping boots increase peak load on disk (rootfs copy) and KVM.
 
 Example tap + bridge script (run with **sudo** on the Linux host): `scripts/firecracker/colima-taps.example.sh`.
 
@@ -69,10 +74,25 @@ Adjust addresses if you use a different subnet.
 
 You can still use **`DOCKER_HOST`** on your Mac for **Docker-backed** dev; Firecracker mode is typically enabled only on the Linux host where KVM is available.
 
+## Full VM snapshots
+
+`POST /sandboxes/{sandbox_id}/snapshot` pauses the microVM, calls Firecracker **`PUT /snapshot/create`** (guest RAM + device state), copies the writable **`rootfs.ext4`** into a bundle under **`FIRECRACKER_SNAPSHOT_DIR`**, resumes the VM, and stores an **`image_ref`** of the form **`fc-bundle:<url-encoded-absolute-path>`**.
+
+Create a **new** sandbox from that ref:
+
+```json
+POST /sandboxes
+{ "from_snapshot_image": "fc-bundle:/abs/path/…", "template_id": "python:3.11" }
+```
+
+Each bundle contains `vm.snap`, `vm.mem`, `rootfs.ext4`, and `manifest.json` (tap slot + guest IP). Cold boots use **`path_on_host: "rootfs.ext4"`** with Firecracker **`cwd`** = the per-VM workdir so snapshots stay portable across workdirs. Restore uses **`PUT /snapshot/load`** with **`network_overrides`** when supported; otherwise it falls back to the tap recorded in the snapshot (only one live VM should use that tap).
+
+**Requirements:** Firecracker version compatible with the snapshot format; enough disk for memory + state + rootfs. See upstream [snapshot-support](https://github.com/firecracker-microvm/firecracker/blob/main/docs/snapshotting/snapshot-support.md).
+
 ## Limitations
 
-- **Filesystem snapshots** (`POST /sandboxes/{id}/snapshot` / `docker commit`) are unavailable (no Docker).  
-- **Template build** that relies on Docker images is skipped; use a prebuilt rootfs.  
+- **Docker** `docker commit` applies only when `SANDBOX_ENGINE=docker` (not the same format as `fc-bundle:`).  
+- **Template build** that relies on Docker images is skipped under Firecracker; use a prebuilt rootfs.  
 - Pause/resume uses Firecracker `PATCH /vm` (`Paused` / `Resumed`).
 
 ## See also

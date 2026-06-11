@@ -45,6 +45,8 @@ class ContainerConfig:
     volumes: Optional[Dict[str, Dict[str, str]]] = None
     # Firecracker: optional host path to ext4 rootfs (overrides default from env).
     rootfs_path: Optional[str] = None
+    # Firecracker: restore from ``POST /sandboxes/{id}/snapshot`` bundle (``fc-bundle:`` ref).
+    fc_bundle_ref: Optional[str] = None
 
 
 class ContainerManager:

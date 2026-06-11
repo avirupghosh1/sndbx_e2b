@@ -40,7 +40,7 @@ class SandboxLifecycleResponse(BaseModel):
 
 
 class SnapshotRecordResponse(BaseModel):
-    """One row from ``docker commit`` + SQLite ``sandbox_snapshots``."""
+    """One row in ``sandbox_snapshots``: Docker image ref or Firecracker ``fc-bundle:`` ref."""
 
     snapshot_id: str
     source_sandbox_id: str

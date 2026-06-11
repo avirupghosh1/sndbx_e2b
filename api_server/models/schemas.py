@@ -34,8 +34,8 @@ class CreateSandboxRequest(BaseModel):
     from_snapshot_image: Optional[str] = Field(
         default=None,
         description=(
-            "Docker image ref returned by POST /sandboxes/{id}/snapshot (filesystem capture). "
-            "When set, ``template_id`` is ignored for image selection; warm pool is skipped."
+            "Docker: image ref from POST /sandboxes/{id}/snapshot (``docker commit``). "
+            "Firecracker: host path to a ``.ext4`` rootfs, or ``fc-bundle:…`` ref returned by the same snapshot route."
         ),
     )
 
@@ -52,7 +52,7 @@ class CreateSandboxRequest(BaseModel):
 
 
 class CreateSnapshotRequest(BaseModel):
-    """Optional label for a filesystem snapshot (Docker ``docker commit``)."""
+    """Optional label: Docker ``docker commit`` or Firecracker full VM snapshot bundle."""
 
     label: Optional[str] = Field(default=None, max_length=200, description="Human-readable label stored in SQLite")
 

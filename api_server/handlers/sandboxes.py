@@ -55,7 +55,7 @@ async def create_sandbox_snapshot(
     api_key: str = Depends(validate_api_key),
     sandbox_manager: SandboxManager = Depends(lambda: SandboxManager.__dict__.get("instance")),
 ):
-    """Docker Engine: save container filesystem as a new local image (``docker commit``; works with default OCI or ``runsc``)."""
+    """Docker Engine: ``docker commit`` (Docker) or Firecracker full VM snapshot (``fc-bundle:``)."""
     out = await run_io(sandbox_manager.create_filesystem_snapshot, sandbox_id, request.label)
     if not out:
         if not sandbox_manager.get_sandbox(sandbox_id):
@@ -63,8 +63,9 @@ async def create_sandbox_snapshot(
         raise HTTPException(
             status_code=501,
             detail=(
-                "Filesystem snapshot unavailable: requires Docker Engine and a successful "
-                "`docker commit` (see docs/E2B_COMPARISON.md)."
+                "Snapshot unavailable for this sandbox runtime: Docker requires a successful "
+                "`docker commit`; Firecracker requires `SANDBOX_ENGINE=firecracker` and a "
+                "compatible Firecracker build (see docs/FIRECRACKER.md)."
             ),
         )
     return SnapshotRecordResponse(**out)

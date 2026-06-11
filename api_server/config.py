@@ -45,6 +45,12 @@ class Config:
     SANDBOX_WARM_POOL_TIMEOUT: int = int(
         os.getenv("SANDBOX_WARM_POOL_TIMEOUT", os.getenv("DEFAULT_TIMEOUT", "3600"))
     )
+    # How many sandboxes this process may provision in parallel per warm-pool segment (1 = legacy sequential).
+    # Firecracker: keep ≤ ``FIRECRACKER_TAP_SLOTS`` total concurrent boots across segments and cold creates.
+    SANDBOX_WARM_POOL_PROVISION_CONCURRENCY: int = max(
+        1,
+        int(os.getenv("SANDBOX_WARM_POOL_PROVISION_CONCURRENCY", "1")),
+    )
 
     # Docker ``docker commit`` repository prefix for POST /sandboxes/{id}/snapshot (local image names)
     SANDBOX_SNAPSHOT_REPO: str = os.getenv("SANDBOX_SNAPSHOT_REPO", "mysandbox-snap")
@@ -94,6 +100,22 @@ class Config:
     FIRECRACKER_SSH_KEY: str = os.getenv("FIRECRACKER_SSH_KEY", "").strip()
     FIRECRACKER_SSH_KNOWN_HOSTS: str = os.getenv("FIRECRACKER_SSH_KNOWN_HOSTS", "/dev/null").strip()
     FIRECRACKER_ENABLE_PCI: str = os.getenv("FIRECRACKER_ENABLE_PCI", "false").strip()
+    # Try ``cp --reflink=auto`` on Linux (CoW on btrfs/xfs) before ``shutil.copy2``; big win for large ext4.
+    FIRECRACKER_ROOTFS_FAST_COPY: bool = os.getenv("FIRECRACKER_ROOTFS_FAST_COPY", "true").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    # Seconds between SSH readiness probes after InstanceStart (was effectively ~1s hardcoded).
+    FIRECRACKER_SSH_POLL_SEC: float = max(
+        0.05,
+        min(2.0, float(os.getenv("FIRECRACKER_SSH_POLL_SEC", "0.25"))),
+    )
+    # Directory for Firecracker full VM snapshots (``fc-bundle:``); each snapshot is a subfolder.
+    FIRECRACKER_SNAPSHOT_DIR: str = os.getenv(
+        "FIRECRACKER_SNAPSHOT_DIR",
+        os.path.join(os.getcwd(), "fc-snapshots"),
+    ).strip()
 
     # Logging
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")

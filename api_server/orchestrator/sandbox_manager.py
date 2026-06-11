@@ -259,16 +259,20 @@ class SandboxManager:
 
         snap = (from_snapshot_image or "").strip()
         root_override: Optional[str] = None
+        fc_bundle_ref: Optional[str] = None
         if self.execution.get_backend_kind() == "firecracker":
             image = (template_id or "").strip() or "firecracker"
             if snap:
                 if snap == FC_WARM_DOCKERLESS_MARKER:
                     snap = ""
+                elif snap.startswith("fc-bundle:"):
+                    fc_bundle_ref = snap
+                    snap = ""
                 elif snap.endswith(".ext4") or os.path.isfile(snap):
                     root_override = snap
                 else:
                     logger.warning(
-                        "Firecracker: ignoring docker image / snapshot ref %r (use host .ext4 path)",
+                        "Firecracker: ignoring docker image / snapshot ref %r (use host .ext4 path or fc-bundle:…)",
                         snap,
                     )
         elif snap:
@@ -299,6 +303,7 @@ class SandboxManager:
             timeout=timeout,
             environment=env_for_create,
             rootfs_path=root_override,
+            fc_bundle_ref=fc_bundle_ref,
         )
 
         container_id = self.execution.create_container(container_name, config)

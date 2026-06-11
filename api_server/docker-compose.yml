@@ -27,6 +27,8 @@ services:
       - SANDBOX_WARM_POOL_CPU=${SANDBOX_WARM_POOL_CPU:-1}
       - SANDBOX_WARM_POOL_MEMORY=${SANDBOX_WARM_POOL_MEMORY:-512m}
       - SANDBOX_WARM_POOL_TIMEOUT=${SANDBOX_WARM_POOL_TIMEOUT:-3600}
+      # Optional: parallel warm-pool provisioning per segment (Firecracker: keep ≤ tap slots / host capacity)
+      - SANDBOX_WARM_POOL_PROVISION_CONCURRENCY=${SANDBOX_WARM_POOL_PROVISION_CONCURRENCY:-1}
       # gVisor: set SANDBOX_ISOLATION=gvisor; runsc must exist on the daemon (see docs/SANDBOX_BACKENDS_FUTURE.md).
       # docker | firecracker (Firecracker requires Linux+KVM on the API host — see docs/FIRECRACKER.md)
       - SANDBOX_ENGINE=${SANDBOX_ENGINE:-docker}
@@ -43,7 +45,7 @@ services:
       - FIRECRACKER_GUEST_OCTET_BASE=10
       - FIRECRACKER_TAP_SLOTS=8
       - FIRECRACKER_SSH_KNOWN_HOSTS=/dev/null
-      - FIRECRACKER_ENABLE_PCI=false
+      - FIRECRACKER_SNAPSHOT_DIR=/data/fc-snapshots
       # Target a remote Linux VM's Docker (see docs/REMOTE_SANDBOX_VM.md). When set, prefer removing the socket mount
       # or ensure DOCKER_HOST wins over the default socket inside the container.
       # - DOCKER_HOST=${DOCKER_HOST:-}
