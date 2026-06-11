@@ -32,14 +32,34 @@ services:
       - SANDBOX_ENGINE=${SANDBOX_ENGINE:-docker}
       - SANDBOX_ISOLATION=${SANDBOX_ISOLATION:-docker}
       - SANDBOX_DOCKER_OCI_RUNTIME=${SANDBOX_DOCKER_OCI_RUNTIME:-}
+      - SANDBOX_ENGINE=firecracker
+      - FIRECRACKER_BINARY=/usr/bin/firecracker
+      - FIRECRACKER_KERNEL=/home/avirup/fc-assets/vmlinux
+      - FIRECRACKER_ROOTFS=/home/avirup/fc-assets/rootfs.ext4
+      - FIRECRACKER_SSH_KEY=/home/avirup/fc-assets/fc_key
+      - FIRECRACKER_SSH_USER=root
+      - FIRECRACKER_GATEWAY=172.16.0.1
+      - FIRECRACKER_SUBNET_PREFIX=172.16.0
+      - FIRECRACKER_GUEST_OCTET_BASE=10
+      - FIRECRACKER_TAP_SLOTS=8
+      - FIRECRACKER_SSH_KNOWN_HOSTS=/dev/null
+      - FIRECRACKER_ENABLE_PCI=false
       # Target a remote Linux VM's Docker (see docs/REMOTE_SANDBOX_VM.md). When set, prefer removing the socket mount
       # or ensure DOCKER_HOST wins over the default socket inside the container.
       # - DOCKER_HOST=${DOCKER_HOST:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - api_data:/data
-    networks:
-      - sandbox-net
+      - /home/avirup/fc-assets:/home/avirup/fc-assets
+      - /home/avirup/fc-assets/firecracker:/usr/bin/firecracker
+      - /dev/kvm:/dev/kvm
+      - /dev/net/tun:/dev/net/tun
+    devices:
+      - /dev/kvm:/dev/kvm
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - NET_ADMIN
+    network_mode: host
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s

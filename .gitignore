@@ -1,0 +1,5 @@
+lib/
+lib64/
+E2B/
+pyvenv.cfg
+bin/

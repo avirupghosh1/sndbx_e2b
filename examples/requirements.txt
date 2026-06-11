@@ -1,0 +1,9 @@
+langchain-core
+langchain
+langchain-openai
+langchain-anthropic
+langchain-google-genai
+langgraph
+langgraph-prebuilt
+deepagents
+pydantic

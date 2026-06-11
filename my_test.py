@@ -2,7 +2,7 @@ import sys
 import os
 import time
 from pathlib import Path
-
+import csv
 import subprocess
 
 from datetime import datetime
@@ -23,28 +23,61 @@ def main():
     #     template_id="node:18", 
     #     request_timeout=900.0,
     #     )
-    cont= 0
-    cont2=0
-  
-    for i in range(20):
+    cont = 0
+    cont2 = 0
+    iterations = 20
+
+    for i in range(iterations):
+        if (i % 2):
+            template_id = "node:18"
+        else:
+            template_id = "python:3.11"
+
         now1 = datetime.now()
         sandbox = Sandbox.create(
-        api_url="http://localhost:8000", 
-        api_key="test-key-12345", # example authentication not done properly yet, dummy value
-        template_id="node:18", 
-        request_timeout=900.0,
+            api_url="http://localhost:8000",
+            api_key="test-key-12345",
+            template_id=template_id,
+            request_timeout=900.0,
         )
         now2 = datetime.now()
-        cont+=float(now2.timestamp()-now1.timestamp())
+        cont += float(now2.timestamp() - now1.timestamp())
+
         now3 = datetime.now()
         sandbox.files.write("/tmp/sdk_test.txt", "Hello from SDK!")
         now4 = datetime.now()
-        cont2+=float(now4.timestamp()-now3.timestamp())
+        cont2 += float(now4.timestamp() - now3.timestamp())
+
         sandbox.kill()
         print(f"Iteration {i+1} completed.")
-    print(f"Average sandbox creation time over 100 iterations: {(cont/100)} seconds")
 
-    print(f"Average file write time over 100 iterations: {(cont2/100)} seconds")
+    avg_boot = cont / iterations
+    avg_file = cont2 / iterations
+
+    csvf = "results.csv"
+    file_exists = os.path.isfile(csvf)
+    engine = os.environ.get('SANDBOX_ENGINE')
+    if(engine!="firecracker"):
+        engine = os.environ.get('SANDBOX_ISOLATION')
+    
+    with open(csvf, "a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=[
+            "timestamp", "engine", "iterations", "avg_boot_s", "avg_file_write_s"
+        ])
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow({
+            "timestamp": datetime.now().isoformat(),
+            "engine": engine,
+            "iterations": iterations,
+            "avg_boot_s": round(avg_boot, 3),
+            "avg_file_write_s": round(avg_file, 3),
+        })
+
+    print(f"\nResults written to {csvf}")
+    print(f"Avg boot time:       {avg_boot:.3f}s")
+    print(f"Avg file write time: {avg_file:.3f}s")
+
     # #making files
    
     # # print(f"File write took {(now4-now3)} seconds")

@@ -152,7 +152,7 @@ class FirecrackerVmmPlane:
             "-o",
             "BatchMode=yes",
             "-o",
-            "ConnectTimeout=5",
+            "ConnectTimeout=2",
             f"{st.ssh_user}@{st.guest_ip}",
         ]
 
@@ -176,7 +176,7 @@ class FirecrackerVmmPlane:
     def _wait_ssh(self, st: _VmState, deadline_s: float = 120.0) -> bool:
         t0 = time.monotonic()
         while time.monotonic() - t0 < deadline_s:
-            r = self._ssh_run(st, ["true"], timeout=5.0)
+            r = self._ssh_run(st, ["true"], timeout=10.0)
             if r.returncode == 0:
                 return True
             time.sleep(1.0)
@@ -254,7 +254,11 @@ class FirecrackerVmmPlane:
             shutil.rmtree(workdir, ignore_errors=True)
             return None
 
-        time.sleep(0.15)
+        
+        for _wait in range(50):
+            if os.path.exists(api_sock):
+               break
+            time.sleep(0.1)
         if proc.poll() is not None:
             logger.error("Firecracker process exited early (check kernel/rootfs/tap and ``dmesg``)")
             shutil.rmtree(workdir, ignore_errors=True)
