@@ -1,3 +1,5 @@
 Sandbox uname: Linux ubuntu-fc-uvm 6.1.172 #1 SMP PREEMPT_DYNAMIC Wed Jun 10 03:22:10 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
-[]
+snapshot image_ref: 'fc-bundle:/data/fc-snapshots/sb-d2940c32b58e4104-694a01a1357e'
+restored /root/snapshot_demo: []
+restored /tmp: []
 Sandbox deleted.
