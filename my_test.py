@@ -17,74 +17,74 @@ from my_sdk import Sandbox, AsyncSandbox
 def main():
     # result = subprocess.run("docker ps -a", shell=True, capture_output=True, text=True)
     # print(result.stdout)
-    # sandbox = Sandbox.create(
-    #     api_url="http://localhost:8000", 
-    #     api_key="test-key-12345", # example authentication not done properly yet, dummy value
-    #     template_id="node:18", 
-    #     request_timeout=900.0,
-    #     )
-    cont = 0
-    cont2 = 0
-    iterations = 20
-
-    for i in range(iterations):
-        if (i % 2):
-            template_id = "node:18"
-        else:
-            template_id = "python:3.11"
-
-        now1 = datetime.now()
-        sandbox = Sandbox.create(
-            api_url="http://localhost:8000",
-            api_key="test-key-12345",
-            template_id=template_id,
-            request_timeout=900.0,
+    sandbox = Sandbox.create(
+        api_url="http://localhost:8000", 
+        api_key="test-key-12345", # example authentication not done properly yet, dummy value
+        template_id="node:18", 
+        request_timeout=900.0,
         )
-        now2 = datetime.now()
-        cont += float(now2.timestamp() - now1.timestamp())
+    # cont = 0
+    # cont2 = 0
+    # iterations = 20
 
-        now3 = datetime.now()
-        sandbox.files.write("/tmp/sdk_test.txt", "Hello from SDK!")
-        now4 = datetime.now()
-        cont2 += float(now4.timestamp() - now3.timestamp())
+    # for i in range(iterations):
+    #     if (i % 2):
+    #         template_id = "node:18"
+    #     else:
+    #         template_id = "python:3.11"
 
-        sandbox.kill()
-        print(f"Iteration {i+1} completed.")
+    #     now1 = datetime.now()
+    #     sandbox = Sandbox.create(
+    #         api_url="http://localhost:8000",
+    #         api_key="test-key-12345",
+    #         template_id=template_id,
+    #         request_timeout=900.0,
+    #     )
+    #     now2 = datetime.now()
+    #     cont += float(now2.timestamp() - now1.timestamp())
 
-    avg_boot = cont / iterations
-    avg_file = cont2 / iterations
+    #     now3 = datetime.now()
+    #     sandbox.files.write("/tmp/sdk_test.txt", "Hello from SDK!")
+    #     now4 = datetime.now()
+    #     cont2 += float(now4.timestamp() - now3.timestamp())
 
-    csvf = "results.csv"
-    file_exists = os.path.isfile(csvf)
-    engine = os.environ.get('SANDBOX_ENGINE')
-    if(engine!="firecracker"):
-        engine = os.environ.get('SANDBOX_ISOLATION')
+    #     sandbox.kill()
+    #     print(f"Iteration {i+1} completed.")
+
+    # avg_boot = cont / iterations
+    # avg_file = cont2 / iterations
+
+    # csvf = "results.csv"
+    # file_exists = os.path.isfile(csvf)
+    # engine = os.environ.get('SANDBOX_ENGINE')
+    # if(engine!="firecracker"):
+    #     engine = os.environ.get('SANDBOX_ISOLATION')
     
-    with open(csvf, "a", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=[
-            "timestamp", "engine", "iterations", "avg_boot_s", "avg_file_write_s"
-        ])
-        if not file_exists:
-            writer.writeheader()
-        writer.writerow({
-            "timestamp": datetime.now().isoformat(),
-            "engine": engine,
-            "iterations": iterations,
-            "avg_boot_s": round(avg_boot, 3),
-            "avg_file_write_s": round(avg_file, 3),
-        })
+    # with open(csvf, "a", newline="") as f:
+    #     writer = csv.DictWriter(f, fieldnames=[
+    #         "timestamp", "engine", "iterations", "avg_boot_s", "avg_file_write_s"
+    #     ])
+    #     if not file_exists:
+    #         writer.writeheader()
+    #     writer.writerow({
+    #         "timestamp": datetime.now().isoformat(),
+    #         "engine": engine,
+    #         "iterations": iterations,
+    #         "avg_boot_s": round(avg_boot, 3),
+    #         "avg_file_write_s": round(avg_file, 3),
+    #     })
 
-    print(f"\nResults written to {csvf}")
-    print(f"Avg boot time:       {avg_boot:.3f}s")
-    print(f"Avg file write time: {avg_file:.3f}s")
+    # print(f"\nResults written to {csvf}")
+    # print(f"Avg boot time:       {avg_boot:.3f}s")
+    # print(f"Avg file write time: {avg_file:.3f}s")
 
     # #making files
    
     # # print(f"File write took {(now4-now3)} seconds")
-    # sandbox.files.write("/tmp/my_test.py", "print('This is a test file created by the SDK.')")
-    # # sandbox.commands.run("mkdir -p /tmp/test_dir")
-    # # result = sandbox.commands.run("uname -a", timeout=30.0)
-    # # print("Sandbox uname:", result.stdout.strip())
+    sandbox.files.write("/tmp/my_test.py", "print('This is a test file created by the SDK.')")
+    sandbox.commands.run("mkdir -p /tmp/test_dir")
+    result = sandbox.commands.run("uname -a", timeout=30.0)
+    print("Sandbox uname:", result.stdout.strip())
     # # # Streaming: print each chunk as the API delivers it (flush so you see it immediately).
     # # Without a TTY, shells often block-buffer stdout; stdbuf -oL forces line buffering so
     # # each "echo" line can arrive before the next sleep (GNU coreutils; present on node images).
@@ -117,19 +117,19 @@ def main():
     # #deleting files and sandbox
     # # sandbox.files.delete("/tmp/sdk_test.txt")
     # # # time.sleep(20)
-    # # # snp= sandbox.create_snapshot() 
-    # sandbox.kill()
+    snp= sandbox.create_snapshot() 
+    sandbox.kill()
     # # # result = subprocess.run("docker ps -a", shell=True, capture_output=True, text=True)
     # # # print(result.stdout)
-    # # # sd2= Sandbox.create(
-    # # #      api_url="http://localhost:8000", 
-    # # #     api_key="test-key-12345", # example authentication not done properly yet, dummy value
-    # # #     template_id="python:3.11", # similar to e2b passing a template, we specify a base image here; in the future we can support more complex templates with files, env vars, etc.
-    # # #     request_timeout=900.0,
-    # # #     from_snapshot_image=snp.image_ref, # creating new sandbox from sna
-    # # # )
+    sd2= Sandbox.create(
+         api_url="http://localhost:8000", 
+        api_key="test-key-12345", # example authentication not done properly yet, dummy value
+        template_id="python:3.11", # similar to e2b passing a template, we specify a base image here; in the future we can support more complex templates with files, env vars, etc.
+        request_timeout=900.0,
+        from_snapshot_image=snp.image_ref, # creating new sandbox from sna
+    )
 
-    # # # print(sd2.files.list("/tmp")) 
-    # # # sd2.kill()# verify we have the same files as the snapshot
-    # # print("Sandbox deleted.")
+    print(sd2.files.list("/tmp")) 
+    sd2.kill()# verify we have the same files as the snapshot
+    print("Sandbox deleted.")
 main()
