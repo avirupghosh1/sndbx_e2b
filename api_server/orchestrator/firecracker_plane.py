@@ -223,6 +223,18 @@ class FirecrackerVmmPlane:
             return False
         return bool(os.path.isfile(root_rw) and os.path.getsize(root_rw) > 0)
 
+    @staticmethod
+    def _host_fsync_file(path: str) -> None:
+        """Best-effort flush of host backing file to stable storage (virtio-blk guest → host cache)."""
+        try:
+            fd = os.open(path, os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        except OSError:
+            pass
+
     def _fc_put(self, api_sock: str, path: str, body: dict) -> tuple[int, bytes]:
         return _FcUnixClient(api_sock).request("PUT", path, body)
 
@@ -264,9 +276,13 @@ class FirecrackerVmmPlane:
         mem_path = os.path.join(bundle_dir, "vm.mem")
         paused = False
         try:
-            r = self.run_command(container_id, "sync", timeout=120.0)
+            r = self.run_command(
+                container_id,
+                "/bin/sh -c 'sync; command -v blockdev >/dev/null 2>&1 && blockdev --flushbufs /dev/vda 2>/dev/null || true'",
+                timeout=120.0,
+            )
             if int(r.get("exit_code") or 0) != 0:
-                logger.warning("Firecracker snapshot: guest sync non-zero: %s", (r.get("stderr") or "")[:500])
+                logger.warning("Firecracker snapshot: guest flush/sync stderr: %s", (r.get("stderr") or "")[:500])
             if pause_during_commit:
                 if not self.pause_instance(container_id):
                     logger.error("Firecracker snapshot: pause failed for %s", container_id)
@@ -284,11 +300,14 @@ class FirecrackerVmmPlane:
             if code not in (200, 201, 204):
                 logger.error("Firecracker snapshot/create failed %s: %r", code, data[:800])
                 return None
+            root_live = os.path.join(st.workdir, "rootfs.ext4")
+            self._host_fsync_file(root_live)
             try:
-                shutil.copy2(os.path.join(st.workdir, "rootfs.ext4"), os.path.join(bundle_dir, "rootfs.ext4"))
+                shutil.copy2(root_live, os.path.join(bundle_dir, "rootfs.ext4"))
             except OSError as ex:
                 logger.error("Firecracker snapshot: rootfs copy failed: %s", ex)
                 return None
+            self._host_fsync_file(os.path.join(bundle_dir, "rootfs.ext4"))
             fc_ver = ""
             try:
                 c2, vbody = _FcUnixClient(st.api_sock).request("GET", "/version", None)

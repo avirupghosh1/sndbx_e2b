@@ -78,9 +78,11 @@ def main():
     # print(f"Avg boot time:       {avg_boot:.3f}s")
     # print(f"Avg file write time: {avg_file:.3f}s")
 
-    # #making files
-   
-    # # print(f"File write took {(now4-now3)} seconds")
+    # Paths on the root ext4 (not tmpfs) survive snapshot+restore reliably; /tmp is often tmpfs
+    # and may appear empty after restore if guest services wipe it.
+    persist_dir = "/root/snapshot_demo"
+    sandbox.commands.run(f"mkdir -p {persist_dir}")
+    sandbox.files.write(f"{persist_dir}/marker.txt", "snapshot marker from my_test.py\n")
     sandbox.files.write("/tmp/my_test.py", "print('This is a test file created by the SDK.')")
     sandbox.commands.run("mkdir -p /tmp/test_dir")
     result = sandbox.commands.run("uname -a", timeout=30.0)
@@ -117,19 +119,21 @@ def main():
     # #deleting files and sandbox
     # # sandbox.files.delete("/tmp/sdk_test.txt")
     # # # time.sleep(20)
-    snp= sandbox.create_snapshot() 
+    snp = sandbox.create_snapshot()
+    print("snapshot image_ref:", repr(snp.image_ref), flush=True)
     sandbox.kill()
     # # # result = subprocess.run("docker ps -a", shell=True, capture_output=True, text=True)
     # # # print(result.stdout)
-    sd2= Sandbox.create(
+    sd2 = Sandbox.create(
          api_url="http://localhost:8000", 
         api_key="test-key-12345", # example authentication not done properly yet, dummy value
         template_id="python:3.11", # similar to e2b passing a template, we specify a base image here; in the future we can support more complex templates with files, env vars, etc.
         request_timeout=900.0,
-        from_snapshot_image=snp.image_ref, # creating new sandbox from sna
+        from_snapshot_image=snp.image_ref, # creating new sandbox from snapshot bundle (fc-bundle:… under Firecracker)
     )
 
-    print(sd2.files.list("/tmp")) 
+    print("restored /root/snapshot_demo:", sd2.files.list("/root/snapshot_demo"), flush=True)
+    print("restored /tmp:", sd2.files.list("/tmp"), flush=True)
     sd2.kill()# verify we have the same files as the snapshot
     print("Sandbox deleted.")
 main()

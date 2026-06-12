@@ -89,6 +89,8 @@ Each bundle contains `vm.snap`, `vm.mem`, `rootfs.ext4`, and `manifest.json` (ta
 
 **Requirements:** Firecracker version compatible with the snapshot format; enough disk for memory + state + rootfs. See upstream [snapshot-support](https://github.com/firecracker-microvm/firecracker/blob/main/docs/snapshotting/snapshot-support.md).
 
+**Disk vs RAM:** The bundle’s `rootfs.ext4` is a host copy of the virtio disk taken after `PUT /snapshot/create`. The guest’s **full RAM** is in `vm.mem`. For data on the **root ext4** (e.g. under `/root`, `/var`), keep guest caches flushed (`sync` / `blockdev --flushbufs`) before snapshot — the API does this before pause. **`/tmp` is often tmpfs** (RAM-only): it is still in `vm.mem`, but some images run **systemd tmp cleanup** after resume, so **`/tmp` can look empty** even when the snapshot worked. For demos, write under **`/root`** or **`/var/tmp`** on the root disk, or verify with `read_file` on a path you control.
+
 ## Limitations
 
 - **Docker** `docker commit` applies only when `SANDBOX_ENGINE=docker` (not the same format as `fc-bundle:`).  
