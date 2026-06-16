@@ -117,7 +117,7 @@ async def main():
     s = await AsyncSandbox.create(
         api_url="http://127.0.0.1:8000",
         api_key="test-key-12345",
-        template_id="python:3.11",
+        template_id="", #USE A DOCKERFILE/IMAGE  TO LISTEN TO A PORT FROM GUEST SIDE THEN FROM CLIENT SIDE THROUGH ACCESS TOKEN AND WS_URL WE CAN REACH TO THAT PORT AND COMMUNICATION IS ENABLED
     )
     async with s.open_agent_websocket(open_timeout=60) as ws:
         await ws.send(json.dumps({
@@ -144,7 +144,7 @@ from my_sdk import Sandbox
 with Sandbox.create(
     api_url="http://127.0.0.1:8000",
     api_key="test-key-12345",
-    template_id="python:3.11",
+    template_id="",
 ) as s:
     with s.open_agent_websocket(open_timeout=60) as ws:
         ws.send(json.dumps({"type": "prompt", "data": {"auth_token": "x", "text": "hi"}}))
