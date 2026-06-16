@@ -173,20 +173,4 @@ Repo helper script: **`ws_chat_probe.py`** (expects **`WS_URL`**, **`TRAFFIC_TOK
 | `my_sandbox_sdk/` | `Sandbox` / `AsyncSandbox`, commands, files, `open_agent_websocket`. |
 | `api_server/docs/E2B_DROPIN_TESTING.md` | Longer WS / token troubleshooting. |
 
-**Other READMEs** in this repo (`api_server/README.md`, `my_sandbox_sdk/README.md`) only point here for quickstart; they are not required reading for basic operation.
-
----
-
-## What to commit (this repo)
-
-`.gitignore` is set so **only** the top-level items below are meant for git by default:
-
-- **`README.md`** — this guide  
-- **`api_server/`** — full API (handlers, `envd_guest/`, `e2b_dropin/`, `orchestrator/`, `docs/`, `requirements.txt`, `.env.example`, …)  
-- **`my_sandbox_sdk/`** — installable SDK  
-- **`.env.example`** — client env template (no secrets)  
-
-Everything else under `intern_1strepo/` (examples, `check_Code.py`, `e2b_shim/`, `docs/`, …) stays **untracked** unless you add a `!/path` line in `.gitignore`.
-
-**Enough to “get the work done”:** those four are sufficient to run the API, install the SDK from this tree, and follow the WebSocket flow in this README. Add **`ws_chat_probe.py`** only if you want the one-file WS probe in the same repo (uncomment the line in `.gitignore`). For Custodian-style host code, add **`check_Code.py`** + vendored **agentlib** elsewhere (see `api_server/docs/AGENTLIB_AND_CHECK_CODE.md`) — not required for API + SDK alone.
 
