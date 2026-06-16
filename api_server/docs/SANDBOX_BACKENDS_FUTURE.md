@@ -8,8 +8,11 @@ With **`SANDBOX_ENGINE=docker`** (default), this API uses **Docker Engine** via 
 |------|----------------|-------------|------------------------------|
 | Default Linux containers | `SANDBOX_ISOLATION=docker` (default) | Daemon default (usually `runc`) | `docker` |
 | gVisor user-space kernel | `SANDBOX_ISOLATION=gvisor` (or `runsc` / `gv`) | `runsc` | `gvisor` |
+| **Lima / Colima VM** (one QEMU VM per sandbox) | `SANDBOX_ISOLATION=lima` or `colima` or `lima-vm` | *(n/a — not Docker)* | `lima` |
 
-With **`SANDBOX_ENGINE=firecracker`**, sandboxes are **Firecracker microVMs** (not Docker). The `runtime` column is **`firecracker`**; **`SANDBOX_ISOLATION`** is ignored.
+With **`SANDBOX_ENGINE=firecracker`**, sandboxes are **Firecracker microVMs** (not Docker). The `runtime` column is **`firecracker`**; **`SANDBOX_ISOLATION`** is ignored **unless** it selects Lima (Lima wins first — see `execution_backend.py`).
+
+With **`SANDBOX_ISOLATION=lima`** (or `colima`), sandboxes are **Lima VMs** (`limactl`); **`SANDBOX_ENGINE`** is ignored for that process (see `docs/LIMA_SANDBOX.md`).
 
 **Explicit override:** set `SANDBOX_DOCKER_OCI_RUNTIME=runsc` (or `runc` / `default` / `docker` for default). When non-empty, it wins over `SANDBOX_ISOLATION` for choosing the OCI name.
 

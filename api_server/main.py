@@ -22,7 +22,7 @@ from middleware import (
     general_exception_handler,
     APIException,
 )
-from handlers import sandboxes, commands, files, agents, templates
+from handlers import sandboxes, commands, files, agents, templates, sandbox_agent_ws, sandbox_envd
 
 # Configure logging
 logging.basicConfig(
@@ -75,6 +75,8 @@ app.include_router(commands.router)
 app.include_router(files.router)
 app.include_router(agents.router)
 app.include_router(templates.router)
+app.include_router(sandbox_agent_ws.router)
+app.include_router(sandbox_envd.router)
 
 
 @app.get("/health")
@@ -87,6 +89,13 @@ async def health_check():
         "version": config.API_VERSION,
         "sandbox_runtime": sm.get_execution_kind() if sm else None,
     }
+    if sm is not None:
+        dblock = sm.describe_docker_workload_blocker()
+        if dblock is not None:
+            out["docker_engine_ok"] = False
+            out["docker_engine_detail"] = dblock
+        else:
+            out["docker_engine_ok"] = True
     if warm is not None:
         try:
             out["warm_pool"] = warm.stats()
@@ -118,6 +127,9 @@ async def startup_event():
         logger.info("Warm sandbox pool: %s", wp.stats())
     logger.info(f"Docker host: {config.DOCKER_HOST or 'default'}")
     logger.info(f"Default template: {config.DEFAULT_TEMPLATE}")
+    hint = sandbox_manager.describe_docker_workload_blocker()
+    if hint:
+        logger.warning("Docker engine not ready — sandbox creates will return 503 until fixed: %s", hint)
 
 
 @app.on_event("shutdown")

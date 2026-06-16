@@ -4,6 +4,9 @@
 #   docker compose up -d --build
 # or: docker compose build api && docker compose up -d
 # (docker-compose v1: same with `docker-compose` instead of `docker compose`.)
+#
+# For Lima / Colima VM sandboxes (SANDBOX_ISOLATION=lima), run the API **on the host** instead
+# so ``limactl`` is on PATH: ``./scripts/run_api_host.sh`` — see docs/LIMA_SANDBOX.md.
 
 services:
   api:

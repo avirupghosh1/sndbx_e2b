@@ -28,6 +28,12 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
+envd = [
+    "httpx>=0.24,<1",
+]
+ws = [
+    "websockets>=12,<16",
+]
 deepagents = [
     "deepagents>=0.6.0",
     "langchain-openai>=0.3.0",

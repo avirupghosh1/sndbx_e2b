@@ -2,8 +2,8 @@
 Synchronous sandbox implementation for My Sandbox SDK.
 """
 
+import os
 from typing import Optional, Dict, Any, List
-from urllib.parse import urljoin
 
 from ..api.sync import APIClient, APIEndpoints
 from ..config import DEFAULT_SDK_REQUEST_TIMEOUT
@@ -11,12 +11,13 @@ from ..models import (
     SandboxInfo,
     SandboxState,
     SandboxLifecycle,
+    E2bConnectionInfo,
     SnapshotRecord,
     CommandResult,
     ProcessInfo,
     SandboxMetrics,
 )
-from ..exceptions import SandboxNotFoundException, SandboxException
+from ..exceptions import APIException, SandboxNotFoundException, SandboxException
 from .commands import Commands
 from .filesystem import Filesystem
 
@@ -48,57 +49,83 @@ class Sandbox:
         self._api = APIClient(api_url, api_key, request_timeout)
         self._commands = Commands(self.sandbox_id, self._api)
         self._filesystem = Filesystem(self.sandbox_id, self._api)
-    
+        self._e2b: Optional[E2bConnectionInfo] = None
+
+    @staticmethod
+    def _resolve_api_url(api_url: Optional[str]) -> str:
+        raw = (api_url or os.environ.get("SANDBOX_API_URL") or os.environ.get("E2B_API_URL") or "").strip()
+        if not raw:
+            raise SandboxException(
+                "api_url is required (pass api_url=... or set SANDBOX_API_URL / E2B_API_URL)"
+            )
+        return raw.rstrip("/")
+
     @classmethod
     def create(
         cls,
-        api_url: str,
+        api_url: Optional[str] = None,
         api_key: Optional[str] = None,
         template_id: Optional[str] = None,
+        template: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         from_snapshot_image: Optional[str] = None,
+        timeout: Optional[int] = None,
         request_timeout: float = DEFAULT_SDK_REQUEST_TIMEOUT,
+        **kwargs: Any,
     ) -> "Sandbox":
         """
         Create a new sandbox.
-        
-        Args:
-            api_url: API server URL
-            api_key: Optional API key
-            template_id: Optional template ID to use for sandbox
-            metadata: Optional metadata to attach to sandbox
-            request_timeout: Request timeout in seconds
-            
-        Returns:
-            Newly created Sandbox instance
-            
-        Example:
-            ```python
-            sandbox = Sandbox.create(api_url="http://localhost:8000")
-            ```
+
+        After create, mints E2B drop-in fields via ``GET …/e2b-connection``. Extra kwargs are ignored.
         """
-        api_client = APIClient(api_url, api_key, request_timeout)
-        
-        body = {}
-        if template_id:
-            body["template_id"] = template_id
+        kwargs.pop("network", None)
+        kwargs.pop("auto_pause", None)
+        _ = kwargs
+
+        resolved = cls._resolve_api_url(api_url)
+        api_client = APIClient(resolved, api_key, request_timeout)
+
+        body: Dict[str, Any] = {}
+        tid = template_id or template
+        if tid:
+            body["template_id"] = tid
         if metadata:
             body["metadata"] = metadata
         if from_snapshot_image:
             body["from_snapshot_image"] = from_snapshot_image
-        
+        if timeout is not None:
+            body["timeout"] = int(timeout)
+
         response = api_client.post(
             APIEndpoints.SANDBOX_CREATE,
             json=body,
         )
-        
+
         sandbox_id = response.get("sandbox_id")
         if not sandbox_id:
             raise SandboxException("Failed to create sandbox: no ID in response")
-        
+
+        inst = cls(
+            sandbox_id=sandbox_id,
+            api_url=resolved,
+            api_key=api_key,
+            request_timeout=request_timeout,
+        )
+        inst.refresh_e2b_connection()
+        return inst
+
+    @classmethod
+    def attach(
+        cls,
+        sandbox_id: str,
+        api_url: str,
+        api_key: Optional[str] = None,
+        request_timeout: float = DEFAULT_SDK_REQUEST_TIMEOUT,
+    ) -> "Sandbox":
+        """Attach without ``GET …/e2b-connection``."""
         return cls(
             sandbox_id=sandbox_id,
-            api_url=api_url,
+            api_url=api_url.rstrip("/"),
             api_key=api_key,
             request_timeout=request_timeout,
         )
@@ -107,17 +134,29 @@ class Sandbox:
     def connect(
         cls,
         sandbox_id: str,
-        api_url: str,
+        api_url: Optional[str] = None,
         api_key: Optional[str] = None,
+        *,
+        with_e2b: bool = True,
         request_timeout: float = DEFAULT_SDK_REQUEST_TIMEOUT,
     ) -> "Sandbox":
-        """Attach to an existing sandbox (no ``POST /sandboxes``). Same as ``Sandbox(...)``."""
-        return cls(
+        """
+        Attach to an existing sandbox. When ``with_e2b`` is True (default), verifies ``running`` and
+        loads ``GET …/e2b-connection`` for WebSocket helpers.
+        """
+        resolved = cls._resolve_api_url(api_url)
+        inst = cls(
             sandbox_id=sandbox_id,
-            api_url=api_url,
+            api_url=resolved,
             api_key=api_key,
             request_timeout=request_timeout,
         )
+        if with_e2b:
+            life = inst.lifecycle()
+            if not life.running:
+                raise SandboxException(f"connect: sandbox {sandbox_id} is not running")
+            inst.refresh_e2b_connection()
+        return inst
 
     @property
     def commands(self) -> Commands:
@@ -128,7 +167,78 @@ class Sandbox:
     def files(self) -> Filesystem:
         """Access sandbox filesystem module."""
         return self._filesystem
-    
+
+    def _require_e2b(self) -> E2bConnectionInfo:
+        if self._e2b is None:
+            raise RuntimeError(
+                "E2B drop-in connection not loaded. Use create()/connect(with_e2b=True), or "
+                "``refresh_e2b_connection()``."
+            )
+        return self._e2b
+
+    @property
+    def e2b_connection(self) -> E2bConnectionInfo:
+        return self._require_e2b()
+
+    @property
+    def ws_url(self) -> str:
+        return self._require_e2b().ws_url
+
+    @property
+    def traffic_access_token(self) -> str:
+        return self._require_e2b().traffic_access_token
+
+    @property
+    def e2b_style_host(self) -> str:
+        return self._require_e2b().e2b_style_host
+
+    def get_host(self, _port: int = 8765) -> str:
+        return self._require_e2b().e2b_style_host
+
+    def refresh_e2b_connection(self) -> E2bConnectionInfo:
+        endpoint = APIEndpoints.format(
+            APIEndpoints.SANDBOX_E2B_CONNECTION,
+            sandbox_id=self.sandbox_id,
+        )
+        try:
+            raw = self._api.get(endpoint)
+        except APIException as exc:
+            if exc.status_code == 503:
+                raise SandboxException(
+                    "e2b-connection unavailable (configure E2B_DROPIN_WS_SECRET on the API server): "
+                    f"{exc.message}"
+                ) from exc
+            raise
+        info = E2bConnectionInfo.from_dict(raw)
+        if not info.ws_url or not info.traffic_access_token or not info.e2b_style_host:
+            raise SandboxException(
+                "e2b-connection response missing ws_url, traffic_access_token, or e2b_style_host"
+            )
+        self._e2b = info
+        return info
+
+    def open_agent_websocket(self, *, use_query_token: bool = False, **kwargs: Any):
+        """Context manager from ``websockets.sync.client.connect`` (requires ``[ws]`` extra)."""
+        from ..agent_websocket import open_agent_websocket_sync
+
+        e2b = self._require_e2b()
+        return open_agent_websocket_sync(
+            e2b.ws_url,
+            e2b.traffic_access_token,
+            use_query_token=use_query_token,
+            **kwargs,
+        )
+
+    def set_timeout(self, seconds: int) -> None:
+        ts = max(60, min(int(seconds), 604800))
+        endpoint = APIEndpoints.format(
+            APIEndpoints.SANDBOX_TIMEOUT,
+            sandbox_id=self.sandbox_id,
+        )
+        data = self._api.post(endpoint, json={"timeout_seconds": ts})
+        if not data.get("refreshed"):
+            raise SandboxException(f"set_timeout not applied (sandbox not running?): {data!r}")
+
     def info(self) -> SandboxInfo:
         """
         Get sandbox information.
@@ -211,6 +321,8 @@ class Sandbox:
         
         try:
             api.post(endpoint)
+            self._e2b = None
+            self._filesystem.invalidate_envd_connection()
             return True
         except SandboxNotFoundException:
             return False

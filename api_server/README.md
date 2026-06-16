@@ -1,8 +1,15 @@
 # Sandbox API Server & Orchestrator
 
+> **Quickstart (run API, SDK, WebSocket):** use the repository **[README.md](../README.md)** in the parent folder.  
+> This document is the **long-form** reference (architecture, every endpoint, deployment).
+
+---
+
 Complete REST API server with Docker container orchestration and agent runtime system.
 
-**Isolation:** default **`SANDBOX_ENGINE=docker`**: Linux containers on Docker Engine, optionally **gVisor** (`SANDBOX_ISOLATION=gvisor`). Set **`SANDBOX_ENGINE=firecracker`** for **KVM microVMs** on a Linux host (see `docs/FIRECRACKER.md`). See `docs/SANDBOX_BACKENDS_FUTURE.md` for the full matrix. For a **separate Linux VM** for Docker, see `docs/REMOTE_SANDBOX_VM.md` and `DOCKER_HOST`. **Colima / Multipass setup:** `docs/REMOTE_SANDBOX_VM_SETUP.md`.
+**Isolation:** default **`SANDBOX_ENGINE=docker`**: Linux containers on Docker Engine, optionally **gVisor** (`SANDBOX_ISOLATION=gvisor`). **`SANDBOX_ISOLATION=lima`** (or **`colima`**) uses **one Lima/QEMU VM per sandbox** via `limactl` (see `docs/LIMA_SANDBOX.md` — for Colima+Lima, run **`./scripts/run_api_host.sh`** on the host instead of containerizing the API). Set **`SANDBOX_ENGINE=firecracker`** for **KVM microVMs** on a Linux host (see `docs/FIRECRACKER.md`). See `docs/SANDBOX_BACKENDS_FUTURE.md` for the full matrix. For a **separate Linux VM** for Docker, see `docs/REMOTE_SANDBOX_VM.md` and `DOCKER_HOST`. **Colima / Multipass setup:** `docs/REMOTE_SANDBOX_VM_SETUP.md`.
+
+**E2B drop-in (agentlib / Custodian-style WebSocket + `AsyncSandbox` shim):** see `docs/E2B_DROPIN_TESTING.md`, `docs/E2B_DROP_IN_IMPLEMENTATION.md`, and **`docs/AGENTLIB_AND_CHECK_CODE.md`** (why PyPI `agentlib` ≠ `check_Code`’s imports). **Envd-style in-guest data plane (Phase 1 HTTP):** `docs/ENVD_STYLE_RUNTIME.md`, `envd_guest/`, `GET /sandboxes/{id}/envd-connection`. **Repo-wide architecture** (API vs shim vs execution planes): **`../docs/ARCHITECTURE.md`**.
 
 ## Table of Contents
 
@@ -71,7 +78,7 @@ Complete REST API server with Docker container orchestration and agent runtime s
 ### 1. Prerequisites
 
 - **Docker**: Must be installed and running
-- **Python 3.9+**: For API server
+- **Python 3.9+**: For API server (`requirements.txt` pins **Pydantic ≥2.12** so `pip install` works on **3.12.4+ / 3.13 / 3.14**; older `pydantic==2.5` could fail building `pydantic-core`)
 - **Docker for Mac/Windows**: Ensure Docker daemon is accessible
 
 ### 2. Clone and Setup
@@ -757,6 +764,8 @@ LOG_LEVEL=INFO            # Log level
 ```
 
 ### .env File
+
+**Canonical template:** ``.env.example`` in this directory lists every variable (E2B drop-in, envd, Firecracker, Lima). Copy it to ``.env`` and set ``E2B_DROPIN_WS_SECRET`` before using ``GET …/e2b-connection`` / ``WS …/agent-ws``. Client-side env for SDK and scripts lives in the repo root ``../.env.example``.
 
 ```bash
 # Create .env file

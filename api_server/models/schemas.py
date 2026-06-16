@@ -1,6 +1,6 @@
 """Request schemas (Pydantic models)."""
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, Dict, Any, List
 from enum import Enum
 
@@ -39,8 +39,7 @@ class CreateSandboxRequest(BaseModel):
         ),
     )
 
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "template_id": "python:3.11",
                 "metadata": {"purpose": "testing"},
@@ -48,13 +47,24 @@ class CreateSandboxRequest(BaseModel):
                 "memory_limit": "1g",
                 "timeout": 7200
             }
-        }
+        })
 
 
 class CreateSnapshotRequest(BaseModel):
     """Optional label for a filesystem snapshot (Docker ``docker commit``)."""
 
     label: Optional[str] = Field(default=None, max_length=200, description="Human-readable label stored in SQLite")
+
+
+class RefreshSandboxTimeoutRequest(BaseModel):
+    """E2B-style ``set_timeout`` / lease refresh: updates the stored sandbox timeout in SQLite."""
+
+    timeout_seconds: int = Field(
+        ...,
+        ge=60,
+        le=604800,
+        description="New lease length in seconds (clamped server-side for Docker sandboxes).",
+    )
 
 
 class RegisterTemplateRequest(BaseModel):
@@ -85,6 +95,63 @@ class RegisterTemplateRequest(BaseModel):
         le=600,
         description="Sleep after ``start_cmd`` before ``docker commit`` (lets background installs finish)",
     )
+    ready_cmd: str = Field(
+        default="",
+        max_length=8000,
+        description=(
+            "Optional shell probe (E2B-style ``readyCmd``): after ``settle_seconds``, run repeatedly "
+            "until exit code 0 or ``TEMPLATE_READY_TIMEOUT_SEC``. Empty = skip."
+        ),
+    )
+
+
+class RegisterTemplateFromDockerfileRequest(BaseModel):
+    """Register a template from a Dockerfile.
+
+    **Default** (``TEMPLATE_DOCKERFILE_BUILD_MODE=parsed``): the API parses the Dockerfile with
+    ``dockerfile-parse``, runs ``RUN`` / ``COPY`` / … **inside a throwaway build container** (same
+    idea as E2B’s step runner), then ``docker commit``. **Docker / gVisor** sandboxes store the OCI
+    tag in ``warm_snapshot_image``. **Firecracker** sandboxes export that image to a host
+    ``*.ext4`` (see ``docs/FIRECRACKER.md``) and store that path in ``warm_snapshot_image``.
+
+    **Legacy** (``TEMPLATE_DOCKERFILE_BUILD_MODE=docker_cli``): runs ``docker build`` on the host and
+    registers the produced tag. **Firecracker** again materializes ``warm_snapshot_image`` as an
+    ext4 path instead of the OCI tag.
+    """
+
+    template_id: str = Field(
+        ...,
+        min_length=1,
+        max_length=64,
+        description="Logical id (same rules as ``POST /templates``).",
+    )
+    dockerfile: str = Field(
+        ...,
+        min_length=1,
+        max_length=512_000,
+        description="Full Dockerfile contents (UTF-8).",
+    )
+    image_tag: Optional[str] = Field(
+        default=None,
+        max_length=200,
+        description="Docker tag for the built image (e.g. ``myregistry.io/org/app:v1``). Auto-generated if omitted.",
+    )
+    build_args: Optional[Dict[str, str]] = Field(
+        default=None,
+        description="Passed as ``docker build --build-arg KEY=VALUE``.",
+    )
+    context_tar_gzip_base64: Optional[str] = Field(
+        default=None,
+        description="Optional base64-encoded **gzip** tar of build context (extracted before build).",
+    )
+    env: Optional[Dict[str, str]] = Field(default=None, description="Container env for warm snapshot build/run (same as ``POST /templates``).")
+    start_cmd: str = Field(
+        default="",
+        max_length=8000,
+        description="Optional shell run inside the **built** image before settle + ``docker commit``.",
+    )
+    ready_cmd: str = Field(default="", max_length=8000, description="Optional readiness probe after settle (see ``RegisterTemplateRequest.ready_cmd``).")
+    settle_seconds: int = Field(default=20, ge=0, le=600, description="Sleep after ``start_cmd`` before ``ready_cmd`` / commit.")
 
 
 class RunCommandRequest(BaseModel):
@@ -95,8 +162,7 @@ class RunCommandRequest(BaseModel):
     timeout: Optional[float] = Field(default=30, description="Command timeout in seconds")
     user: Optional[str] = Field(default=None, description="User to run command as")
 
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "command": "python script.py",
                 "cwd": "/app",
@@ -104,7 +170,7 @@ class RunCommandRequest(BaseModel):
                 "timeout": 60,
                 "user": "root"
             }
-        }
+        })
 
 
 class WriteFileRequest(BaseModel):
@@ -113,14 +179,13 @@ class WriteFileRequest(BaseModel):
     content: str = Field(..., description="File content")
     encoding: Optional[str] = Field(default="utf-8", description="File encoding")
 
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "path": "/tmp/test.txt",
                 "content": "Hello, World!",
                 "encoding": "utf-8"
             }
-        }
+        })
 
 
 class DeleteFileRequest(BaseModel):
@@ -128,13 +193,12 @@ class DeleteFileRequest(BaseModel):
     path: str = Field(..., description="File path")
     recursive: Optional[bool] = Field(default=False, description="Delete recursively")
 
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "path": "/tmp/dir",
                 "recursive": True
             }
-        }
+        })
 
 
 class CreateDirectoryRequest(BaseModel):
@@ -142,25 +206,23 @@ class CreateDirectoryRequest(BaseModel):
     path: str = Field(..., description="Directory path")
     mode: Optional[int] = Field(default=0o755, description="Directory permissions")
 
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "path": "/tmp/newdir",
                 "mode": 493  # 0o755
             }
-        }
+        })
 
 
 class ListFilesRequest(BaseModel):
     """List files request."""
     path: Optional[str] = Field(default="/", description="Directory path")
 
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "path": "/tmp"
             }
-        }
+        })
 
 
 class SpawnAgentRequest(BaseModel):
@@ -170,8 +232,7 @@ class SpawnAgentRequest(BaseModel):
     config: Optional[Dict[str, Any]] = Field(default={}, description="Agent configuration")
     auto_start: Optional[bool] = Field(default=True, description="Auto-start agent")
 
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "agent_name": "build_loop_demo",
                 "agent_code": "print('Hello from agent')",
@@ -182,7 +243,7 @@ class SpawnAgentRequest(BaseModel):
                 },
                 "auto_start": True,
             }
-        }
+        })
 
 
 class KillAgentRequest(BaseModel):
@@ -190,13 +251,12 @@ class KillAgentRequest(BaseModel):
     agent_id: str = Field(..., description="Agent ID")
     force: Optional[bool] = Field(default=False, description="Force kill")
 
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "agent_id": "agent-123",
                 "force": False
             }
-        }
+        })
 
 
 class AgentMessage(BaseModel):
@@ -206,12 +266,11 @@ class AgentMessage(BaseModel):
     content: Dict[str, Any] = Field(..., description="Message content")
     timestamp: Optional[str] = Field(default=None, description="Timestamp")
 
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "agent_id": "agent-123",
                 "message_type": "task",
                 "content": {"task": "analyze", "data": "..."},
                 "timestamp": "2024-01-01T00:00:00Z"
             }
-        }
+        })

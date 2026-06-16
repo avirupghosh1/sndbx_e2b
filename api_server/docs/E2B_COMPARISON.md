@@ -68,6 +68,6 @@ from my_sdk import Sandbox, SandboxLifecycle
 sb = Sandbox.create(api_url="http://127.0.0.1:8000", api_key="...")
 assert sb.lifecycle().running
 
-# Reattach later (same as Sandbox(sb_id, ...))
+# Reattach later (default ``with_e2b=True``: ``GET …/status`` + ``GET …/e2b-connection``)
 sb2 = Sandbox.connect(sb.sandbox_id, api_url="http://127.0.0.1:8000", api_key="...")
 ```

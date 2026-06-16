@@ -4,6 +4,8 @@ Asynchronous commands module for My Sandbox SDK.
 
 from typing import Optional, List, Dict, Any, AsyncIterator
 from functools import partial
+import asyncio
+import uuid
 
 from ..api import APIEndpoints
 from ..models import CommandResult, ProcessInfo
@@ -29,7 +31,10 @@ class AsyncCommands:
         command: str,
         cwd: Optional[str] = None,
         env: Optional[Dict[str, str]] = None,
+        envs: Optional[Dict[str, str]] = None,
         timeout: Optional[float] = None,
+        user: Optional[str] = None,
+        **kwargs: Any,
     ) -> CommandResult:
         """
         Run a command in the sandbox asynchronously.
@@ -38,30 +43,31 @@ class AsyncCommands:
             command: Command string to execute
             cwd: Working directory for the command
             env: Environment variables to set
+            envs: Alias for ``env`` (E2B / Custodian-shaped callers may pass ``envs=``).
             timeout: Timeout for command execution in seconds
-            
-        Returns:
-            CommandResult with exit code, stdout, stderr
-            
-        Example:
-            ```python
-            result = await sandbox.commands.run("echo 'hello'")
-            print(result.stdout)  # hello
-            print(result.exit_code)  # 0
-            ```
+            user: Optional user to run as (API forwards to the workload)
+            **kwargs: Ignored (forward-compatibility with shim-shaped call sites).
         """
+        _ = kwargs
         endpoint = APIEndpoints.format(
             APIEndpoints.COMMANDS_RUN,
             sandbox_id=self.sandbox_id,
         )
         
-        body = {"command": command}
+        body: Dict[str, Any] = {"command": command}
         if cwd:
             body["cwd"] = cwd
+        merged: Dict[str, str] = {}
         if env:
-            body["env"] = env
+            merged.update(env)
+        if envs:
+            merged.update(envs)
+        if merged:
+            body["env"] = merged
         if timeout:
             body["timeout"] = timeout
+        if user is not None:
+            body["user"] = user
         
         response = await self._api.post(endpoint, json=body)
         return CommandResult.from_dict(response)

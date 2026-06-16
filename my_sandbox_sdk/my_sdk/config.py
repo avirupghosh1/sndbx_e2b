@@ -9,6 +9,15 @@ from typing import Optional
 DEFAULT_SDK_REQUEST_TIMEOUT = 600.0
 
 
+def use_envd_filesystem() -> bool:
+    """When true, ``Filesystem`` / ``AsyncFilesystem`` talk to the guest over ``envd-connection`` (httpx).
+
+    Set ``MY_SANDBOX_USE_ENVD_FILESYSTEM=1`` (or ``true`` / ``yes`` / ``on``). Default: off (REST via control plane).
+    """
+    v = (os.environ.get("MY_SANDBOX_USE_ENVD_FILESYSTEM") or "").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
 class Config:
     """Configuration for SDK."""
     

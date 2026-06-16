@@ -7,8 +7,10 @@ from async_runner import run_io
 from models import (
     CreateSandboxRequest,
     CreateSnapshotRequest,
+    RefreshSandboxTimeoutRequest,
     SandboxResponse,
     SandboxLifecycleResponse,
+    SandboxTimeoutRefreshResponse,
     SnapshotRecordResponse,
 )
 from middleware import validate_api_key, SandboxNotFoundException
@@ -35,13 +37,14 @@ async def create_sandbox(
     )
 
     if not sandbox_id:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "Failed to create sandbox: Docker could not start a workload. "
-                "Check Docker socket, image pull, and template_id."
-            ),
+        hint = sandbox_manager.describe_docker_workload_blocker()
+        detail = (
+            "Failed to create sandbox: Docker could not start a workload. "
+            "Check Docker socket, image pull, and template_id."
         )
+        if hint:
+            detail = f"{detail} {hint}"
+        raise HTTPException(status_code=503, detail=detail)
 
     sandbox = sandbox_manager.get_sandbox(sandbox_id)
 
@@ -55,7 +58,7 @@ async def create_sandbox_snapshot(
     api_key: str = Depends(validate_api_key),
     sandbox_manager: SandboxManager = Depends(lambda: SandboxManager.__dict__.get("instance")),
 ):
-    """Docker Engine: save container filesystem as a new local image (``docker commit``; works with default OCI or ``runsc``)."""
+    """Docker: ``docker commit`` (default OCI or ``runsc``) or Firecracker: full VM snapshot (``fc-bundle:`` ref)."""
     out = await run_io(sandbox_manager.create_filesystem_snapshot, sandbox_id, request.label)
     if not out:
         if not sandbox_manager.get_sandbox(sandbox_id):
@@ -63,8 +66,9 @@ async def create_sandbox_snapshot(
         raise HTTPException(
             status_code=501,
             detail=(
-                "Filesystem snapshot unavailable: requires Docker Engine and a successful "
-                "`docker commit` (see docs/E2B_COMPARISON.md)."
+                "Filesystem snapshot unavailable: requires Docker Engine + successful `docker commit`, "
+                "or Firecracker with snapshot support (`fc-bundle:`); see docs/FIRECRACKER.md and "
+                "docs/E2B_COMPARISON.md."
             ),
         )
     return SnapshotRecordResponse(**out)
@@ -95,6 +99,28 @@ async def get_sandbox_status(
     if not data:
         raise SandboxNotFoundException(sandbox_id)
     return SandboxLifecycleResponse(**data)
+
+
+@router.post("/{sandbox_id}/timeout", response_model=SandboxTimeoutRefreshResponse)
+async def refresh_sandbox_timeout(
+    sandbox_id: str,
+    request: RefreshSandboxTimeoutRequest,
+    api_key: str = Depends(validate_api_key),
+    sandbox_manager: SandboxManager = Depends(lambda: SandboxManager.__dict__.get("instance")),
+):
+    """Refresh stored sandbox lease (E2B ``set_timeout`` / Custodian heartbeat)."""
+    if not sandbox_manager.get_sandbox(sandbox_id):
+        raise SandboxNotFoundException(sandbox_id)
+    ok = await run_io(
+        sandbox_manager.refresh_sandbox_timeout,
+        sandbox_id,
+        request.timeout_seconds,
+    )
+    return SandboxTimeoutRefreshResponse(
+        sandbox_id=sandbox_id.strip(),
+        timeout_seconds=int(request.timeout_seconds),
+        refreshed=bool(ok),
+    )
 
 
 @router.get("/{sandbox_id}", response_model=SandboxResponse)

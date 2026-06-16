@@ -195,6 +195,9 @@ class APIEndpoints:
     SANDBOX_PAUSE = "/sandboxes/{sandbox_id}/pause"
     SANDBOX_RESUME = "/sandboxes/{sandbox_id}/resume"
     SANDBOX_STATUS = "/sandboxes/{sandbox_id}/status"
+    SANDBOX_E2B_CONNECTION = "/sandboxes/{sandbox_id}/e2b-connection"
+    SANDBOX_ENVD_CONNECTION = "/sandboxes/{sandbox_id}/envd-connection"
+    SANDBOX_TIMEOUT = "/sandboxes/{sandbox_id}/timeout"
     SANDBOX_SNAPSHOT = "/sandboxes/{sandbox_id}/snapshot"
     SANDBOX_SNAPSHOTS_LIST = "/sandboxes/{sandbox_id}/snapshots"
     SANDBOX_METRICS = "/sandboxes/{sandbox_id}/metrics"
@@ -212,6 +215,11 @@ class APIEndpoints:
     FILES_DELETE = "/sandboxes/{sandbox_id}/files/delete"
     FILES_UPLOAD = "/sandboxes/{sandbox_id}/files/upload"
     FILES_DOWNLOAD = "/sandboxes/{sandbox_id}/files/download"
+
+    # Template endpoints (logical templates + Dockerfile builds; see ``my_sdk.template``)
+    TEMPLATES = "/templates"
+    TEMPLATES_FROM_DOCKERFILE = "/templates/from-dockerfile"
+    TEMPLATE_GET = "/templates/{template_id}"
 
     # Agent endpoints (API process runs agent threads; agent code executes inside the sandbox container)
     AGENTS_LIST = "/sandboxes/{sandbox_id}/agents"

@@ -63,6 +63,27 @@ class SandboxLifecycle:
 
 
 @dataclass
+class E2bConnectionInfo:
+    """Minted WebSocket connection metadata from ``GET /sandboxes/{id}/e2b-connection`` (E2B drop-in)."""
+
+    sandbox_id: str
+    ws_url: str
+    traffic_access_token: str
+    e2b_style_host: str
+    agent_port: int = 8765
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "E2bConnectionInfo":
+        return cls(
+            sandbox_id=str(data.get("sandbox_id") or ""),
+            ws_url=str(data.get("ws_url") or "").strip(),
+            traffic_access_token=str(data.get("traffic_access_token") or "").strip(),
+            e2b_style_host=str(data.get("e2b_style_host") or "").strip(),
+            agent_port=int(data.get("agent_port") or 8765),
+        )
+
+
+@dataclass
 class SnapshotRecord:
     """Filesystem snapshot metadata (Docker ``docker commit``)."""
 
@@ -134,6 +155,25 @@ class FilesystemEntry:
     modified_at: Optional[str] = None
     
     @classmethod
+    def from_envd_entry_dict(cls, data: Dict) -> "FilesystemEntry":
+        """Map envd guest ``/v1/fs/*`` entry payloads to :class:`FilesystemEntry`."""
+        raw_type = str(data.get("type", ""))
+        if raw_type == "FILE_TYPE_DIRECTORY":
+            et = EntryType.DIRECTORY
+        elif raw_type == "FILE_TYPE_FILE":
+            et = EntryType.FILE
+        else:
+            et = EntryType.FILE
+        return cls(
+            path=str(data.get("path", "")),
+            name=str(data.get("name", "")),
+            type=et,
+            size=int(data.get("size", 0) or 0),
+            mode=int(data.get("mode", 0) or 0),
+            modified_at=data.get("modified_at"),
+        )
+
+    @classmethod
     def from_dict(cls, data: Dict) -> "FilesystemEntry":
         """Create from API response dict."""
         return cls(
@@ -158,6 +198,55 @@ class WriteInfo:
         return cls(
             bytes_written=data.get("bytes_written", 0),
             path=data.get("path", ""),
+        )
+
+
+@dataclass
+class BuildInfo:
+    """Result of ``Template.build`` (E2B-compatible field names; local API has no async build id).
+
+    E2B returns ``name``, ``template_id``, ``build_id`` from their cloud builder. This SDK sets
+    ``build_id`` to ``None`` because registration/build is synchronous on your API host.
+    """
+
+    name: str
+    template_id: str
+    build_id: Optional[str] = None
+    definition: Optional[Dict[str, Any]] = None
+
+    @classmethod
+    def from_api(cls, name: str, template_id: str, data: Dict[str, Any]) -> "BuildInfo":
+        return cls(name=name, template_id=template_id, build_id=None, definition=dict(data))
+
+
+@dataclass
+class TemplateDefinition:
+    """Logical template row returned by ``GET/POST /templates`` (subset of API fields)."""
+
+    template_id: str
+    base_image: str
+    env: Dict[str, str] = field(default_factory=dict)
+    start_cmd: str = ""
+    settle_seconds: int = 20
+    ready_cmd: str = ""
+    warm_snapshot_image: Optional[str] = None
+    build_error: Optional[str] = None
+    created_at: str = ""
+    updated_at: str = ""
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "TemplateDefinition":
+        return cls(
+            template_id=str(data.get("template_id", "")),
+            base_image=str(data.get("base_image", "")),
+            env=dict(data.get("env") or {}),
+            start_cmd=str(data.get("start_cmd") or ""),
+            settle_seconds=int(data.get("settle_seconds") or 20),
+            ready_cmd=str(data.get("ready_cmd") or ""),
+            warm_snapshot_image=data.get("warm_snapshot_image"),
+            build_error=data.get("build_error"),
+            created_at=str(data.get("created_at") or ""),
+            updated_at=str(data.get("updated_at") or ""),
         )
 
 

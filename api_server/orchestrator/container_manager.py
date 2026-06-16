@@ -4,6 +4,7 @@ import base64
 import io
 import os
 import re
+import uuid
 import shlex
 import socket as std_socket
 import struct
@@ -37,6 +38,7 @@ def _sanitize_read_text(raw: bytes) -> str:
 @dataclass
 class ContainerConfig:
     """Container configuration."""
+
     image: str
     cpu_limit: str = "1"
     memory_limit: str = "512m"
@@ -45,6 +47,14 @@ class ContainerConfig:
     volumes: Optional[Dict[str, Dict[str, str]]] = None
     # Firecracker: optional host path to ext4 rootfs (overrides default from env).
     rootfs_path: Optional[str] = None
+    # Firecracker: boot from a snapshot bundle ref ``fc-bundle:…`` (see ``firecracker_plane``).
+    fc_bundle_ref: Optional[str] = None
+    # E2B drop-in: map in-container agent WS port to a host port so the API can use ``ws://127.0.0.1:<host>/``.
+    publish_e2b_agent_port: bool = False
+    e2b_agent_port: int = 8765
+    # Envd-style guest HTTP daemon (port 49983 in container → random host port when enabled).
+    publish_envd_port: bool = False
+    envd_port: int = 49983
 
 
 class ContainerManager:
@@ -52,15 +62,57 @@ class ContainerManager:
 
     def __init__(self, oci_runtime: Optional[str] = None):
         self._oci_runtime: Optional[str] = "runsc" if (oci_runtime or "").strip().lower() == "runsc" else None
+        self._docker_connect_error: Optional[str] = None
+        self.client = None
+        # Lazy connect: daemon may start after the API (Colima/Docker); retry on each operation if needed.
+        self._ensure_docker_client()
+
+    def _ensure_docker_client(self) -> bool:
+        """Return True if ``self.client`` is usable; retry ``docker.from_env()`` when unset."""
+        if self.client is not None:
+            return True
         try:
             self.client = docker.from_env()
+            self._docker_connect_error = None
+            logger.info("Docker client connected (docker.from_env)")
+            return True
         except Exception as e:
-            logger.error(f"Failed to connect to Docker: {e}")
+            self._docker_connect_error = f"{type(e).__name__}: {e}"
+            logger.warning("docker.from_env() failed: %s", self._docker_connect_error)
             self.client = None
+            return False
+
+    def describe_docker_unavailable(self) -> Optional[str]:
+        """Human-readable reason when ``self.client`` is missing or daemon is down."""
+        if not self._ensure_docker_client():
+            if self._docker_connect_error:
+                extra = ""
+                if "No such file" in self._docker_connect_error or "FileNotFoundError" in self._docker_connect_error:
+                    extra = (
+                        " This usually means the default Docker socket is missing (e.g. no /var/run/docker.sock). "
+                        "On macOS with Colima: `colima start` then "
+                        '`export DOCKER_HOST="unix://${HOME}/.colima/default/docker.sock"` '
+                        "(or `docker context use colima`) and restart the API."
+                    )
+                return (
+                    "Docker SDK failed to create a client (docker.from_env). "
+                    f"{self._docker_connect_error}. "
+                    "Typical fixes: start a Docker engine (Docker Desktop, Colima, OrbStack, or Linux dockerd), fix DOCKER_HOST, or on Linux add your user to the docker group."
+                    + extra
+                )
+            return "Docker client is not initialized."
+        try:
+            self.client.ping()
+        except Exception as e:
+            return (
+                f"Docker daemon did not respond to ping: {type(e).__name__}: {e}. "
+                "Is the daemon running?"
+            )
+        return None
 
     def check_docker(self) -> bool:
         """Check if Docker is available."""
-        if self.client is None:
+        if not self._ensure_docker_client():
             return False
         try:
             self.client.ping()
@@ -70,7 +122,7 @@ class ContainerManager:
 
     def pull_image(self, image: str) -> bool:
         """Pull Docker image."""
-        if not self.client:
+        if not self._ensure_docker_client():
             return False
 
         try:
@@ -90,8 +142,11 @@ class ContainerManager:
         
         Returns container ID on success, None on failure.
         """
-        if not self.client:
-            logger.error("Docker client not available")
+        if not self._ensure_docker_client():
+            logger.error(
+                "Docker client not available%s",
+                f": {self._docker_connect_error}" if self._docker_connect_error else "",
+            )
             return None
 
         try:
@@ -123,6 +178,15 @@ class ContainerManager:
                 read_only=False,
                 restart_policy={"Name": "no"},
             )
+            if getattr(config, "publish_e2b_agent_port", False):
+                ap = max(1, min(65535, int(getattr(config, "e2b_agent_port", 8765))))
+                run_kwargs["ports"] = {f"{ap}/tcp": None}
+            ports_map: Dict[str, Any] = dict(run_kwargs.get("ports") or {})
+            if getattr(config, "publish_envd_port", False):
+                ep = max(1, min(65535, int(getattr(config, "envd_port", 49983))))
+                ports_map[f"{ep}/tcp"] = None
+            if ports_map:
+                run_kwargs["ports"] = ports_map
             if self._oci_runtime:
                 run_kwargs["runtime"] = self._oci_runtime
             container = self.client.containers.run(**run_kwargs)
@@ -147,7 +211,7 @@ class ContainerManager:
         
         Returns dict with exit_code, stdout, stderr, pid.
         """
-        if not self.client:
+        if not self._ensure_docker_client():
             return {
                 "exit_code": -1,
                 "stdout": "",
@@ -161,12 +225,16 @@ class ContainerManager:
             def _exec():
                 # Run through a shell so pipelines, redirects, &&, and globs behave like a terminal.
                 exec_cmd = ["/bin/sh", "-c", command]
-                return container.exec_run(
+                kw: Dict[str, Any] = dict(
                     cmd=exec_cmd,
                     workdir=cwd or "/",
-                    environment=env or {},
                     user=user or "root",
                 )
+                # Only pass ``environment`` when the caller supplies vars; otherwise inherit the
+                # container's env (e.g. Dockerfile / template ``ENV`` baked into ``containers.run``).
+                if env:
+                    kw["environment"] = env
+                return container.exec_run(**kw)
 
             # docker-py 7+ removed exec_run(timeout=...); enforce API deadline in the caller thread.
             exec_timeout = float(timeout) if timeout is not None else 30.0
@@ -207,6 +275,42 @@ class ContainerManager:
                 "pid": -1,
             }
 
+    def put_archive_to_container(self, container_id: str, path: str, data: bytes) -> bool:
+        """Upload a tarball to ``path`` in the container (same mechanism as ``COPY`` / ``put_archive``).
+
+        Under **gVisor** (``runsc``), stages the tarball in ``/tmp`` via shell base64 chunks
+        (same as :meth:`write_file`), then runs ``tar xf <file> -C <dest>`` — Engine
+        ``put_archive`` often 404s, and ``tar xf -`` over a TTY exec is rejected by GNU tar.
+        """
+        if not self._ensure_docker_client():
+            return False
+        try:
+            container = self.client.containers.get(container_id)
+            dest = (path or "/").rstrip("/") or "/"
+            mkdir = container.exec_run(
+                ["/bin/sh", "-c", f"mkdir -p {shlex.quote(dest)}"],
+                user="root",
+            )
+            if mkdir.exit_code != 0:
+                out = mkdir.output
+                err = out.decode("utf-8", errors="replace") if isinstance(out, (bytes, bytearray)) else str(out)
+                logger.error(
+                    "put_archive_to_container mkdir failed %s path=%r exit=%s err=%r",
+                    container_id[:12],
+                    dest,
+                    mkdir.exit_code,
+                    err[:2000],
+                )
+                return False
+            if not data:
+                return True
+            if self._oci_runtime == "runsc":
+                return self._put_archive_via_staged_tarfile(container, dest, data)
+            return bool(container.put_archive(dest, data))
+        except Exception as e:
+            logger.error("put_archive_to_container %s path=%r: %s", container_id[:12], path, e)
+            return False
+
     def _exec_env_list(self, env: Optional[Dict[str, str]]) -> Optional[List[str]]:
         if not env:
             return None
@@ -232,7 +336,7 @@ class ContainerManager:
         exec_id: Optional[str] = None
         exit_code = -1
 
-        if not self.client:
+        if not self._ensure_docker_client():
             yield {"type": "error", "message": "Docker client not available"}
             yield {"type": "exit", "exit_code": -1}
             return
@@ -430,7 +534,7 @@ class ContainerManager:
         path: str,
     ) -> Optional[str]:
         """Read file from container."""
-        if not self.client:
+        if not self._ensure_docker_client():
             return None
 
         try:
@@ -618,6 +722,45 @@ class ContainerManager:
             except Exception:
                 pass
 
+    def _put_archive_via_staged_tarfile(self, container: "Container", dest_dir: str, data: bytes) -> bool:
+        """Extract ``data`` (POSIX tar bytes) under ``dest_dir`` without Engine ``put_archive``.
+
+        **gVisor:** ``put_archive`` often 404s. Streaming into ``tar xf -`` over an exec with
+        ``tty=True`` makes **stdin a TTY**; GNU tar then refuses to read an archive from fd 0
+        (*"Refusing to read archive contents from terminal (missing -f option?)"*).
+
+        **Approach:** stage the tarball with :meth:`_write_file_via_shell_base64` (same runsc-safe
+        path as :meth:`write_file`), then ``tar xf <file> -C <dest>`` via a normal non-attach exec.
+        """
+        if not data:
+            return True
+        dest = (dest_dir or "/").rstrip("/") or "/"
+        blob = f"/tmp/.api_put_archive_{uuid.uuid4().hex}.tar"
+        if not self._write_file_via_shell_base64(container, blob, data):
+            logger.error("put_archive runsc: staging tarball failed path=%r", blob)
+            return False
+        try:
+            er = container.exec_run(["tar", "xf", blob, "-C", dest], user="root")
+            if er.exit_code != 0:
+                out = er.output
+                if isinstance(out, (bytes, bytearray)):
+                    tail = out.decode("utf-8", errors="replace")[-4000:]
+                else:
+                    tail = str(out)[:4000]
+                logger.error(
+                    "put_archive runsc: tar xf failed dest=%r exit=%s tail=%r",
+                    dest,
+                    er.exit_code,
+                    tail,
+                )
+                return False
+            return True
+        finally:
+            try:
+                container.exec_run(["rm", "-f", blob], user="root")
+            except Exception:
+                pass
+
     def write_file(
         self,
         container_id: str,
@@ -634,7 +777,7 @@ class ContainerManager:
         stream bytes to ``/bin/sh -c 'cat >path'`` over an **exec attach** socket
         instead (see https://gvisor.dev/docs/user_guide/faq/ — in-sandbox copy).
         """
-        if not self.client:
+        if not self._ensure_docker_client():
             return False
 
         try:
@@ -720,7 +863,7 @@ class ContainerManager:
         path: str = "/",
     ) -> Optional[list]:
         """List files in container directory."""
-        if not self.client:
+        if not self._ensure_docker_client():
             return None
 
         try:
@@ -786,7 +929,7 @@ class ContainerManager:
         recursive: bool = False,
     ) -> bool:
         """Delete file from container."""
-        if not self.client:
+        if not self._ensure_docker_client():
             return False
 
         try:
@@ -813,7 +956,7 @@ class ContainerManager:
         mode: int = 0o755,
     ) -> bool:
         """Create directory in container."""
-        if not self.client:
+        if not self._ensure_docker_client():
             return False
 
         try:
@@ -836,7 +979,7 @@ class ContainerManager:
 
     def get_container_stats(self, container_id: str) -> Optional[Dict[str, Any]]:
         """Get container resource usage."""
-        if not self.client:
+        if not self._ensure_docker_client():
             return None
 
         try:
@@ -879,7 +1022,7 @@ class ContainerManager:
         This captures **filesystem state** (plus image layers below), not RAM/process
         registers. For in-place freeze/resume of the same container, use pause/unpause.
         """
-        if not self.client:
+        if not self._ensure_docker_client():
             return None
         try:
             container = self.client.containers.get(container_id)
@@ -898,7 +1041,7 @@ class ContainerManager:
 
     def kill_container(self, container_id: str, force: bool = True) -> bool:
         """Kill container."""
-        if not self.client:
+        if not self._ensure_docker_client():
             return False
 
         try:
@@ -917,12 +1060,51 @@ class ContainerManager:
             logger.error(f"Failed to kill container {container_id}: {e}")
             return False
 
+    def get_container_internal_ipv4(self, container_id: str) -> Optional[str]:
+        """First non-empty IPv4 from Docker ``NetworkSettings`` (prefers ``bridge``)."""
+        if not self._ensure_docker_client():
+            return None
+        try:
+            container = self.client.containers.get(container_id)
+            nets = (container.attrs or {}).get("NetworkSettings", {}).get("Networks") or {}
+            order = []
+            if "bridge" in nets:
+                order.append("bridge")
+            order.extend(k for k in nets if k not in order)
+            for name in order:
+                cfg = nets.get(name) or {}
+                ip = (cfg.get("IPAddress") or "").strip()
+                if ip:
+                    return ip
+        except Exception as e:
+            logger.debug("get_container_internal_ipv4 %s: %s", container_id[:12], e)
+        return None
+
+    def get_container_tcp_host_port(self, container_id: str, container_port: int) -> Optional[int]:
+        """Host TCP port mapped to ``container_port`` (requires ``ports={f'{port}/tcp': None}`` at create)."""
+        if not self._ensure_docker_client():
+            return None
+        p = max(1, min(65535, int(container_port)))
+        key = f"{p}/tcp"
+        try:
+            container = self.client.containers.get(container_id)
+            container.reload()
+            bindings = (container.attrs or {}).get("NetworkSettings", {}).get("Ports") or {}
+            lst = bindings.get(key) or []
+            for b in lst:
+                hp = (b or {}).get("HostPort")
+                if hp:
+                    return int(hp)
+        except Exception as e:
+            logger.debug("get_container_tcp_host_port %s: %s", container_id[:12], e)
+        return None
+
     def get_backend_kind(self) -> str:
         return "gvisor" if self._oci_runtime == "runsc" else "docker"
 
     def pause_instance(self, container_id: str) -> bool:
         """Pause container (Docker-only)."""
-        if not self.client:
+        if not self._ensure_docker_client():
             return False
         try:
             container = self.client.containers.get(container_id)
@@ -934,7 +1116,7 @@ class ContainerManager:
 
     def resume_instance(self, container_id: str) -> bool:
         """Resume paused container (Docker-only)."""
-        if not self.client:
+        if not self._ensure_docker_client():
             return False
         try:
             container = self.client.containers.get(container_id)
@@ -946,7 +1128,7 @@ class ContainerManager:
 
     def is_container_running(self, container_id: str) -> bool:
         """Check if container is running."""
-        if not self.client:
+        if not self._ensure_docker_client():
             return False
 
         try:

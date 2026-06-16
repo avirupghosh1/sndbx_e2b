@@ -1,6 +1,6 @@
 """Response schemas (Pydantic models)."""
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict, model_validator
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 
@@ -18,8 +18,17 @@ class SandboxResponse(BaseModel):
         description="Engine label: ``docker``, ``gvisor`` (Docker + ``runsc``), or ``firecracker`` (KVM microVM).",
     )
 
-    class Config:
-        schema_extra = {
+    @model_validator(mode="before")
+    @classmethod
+    def _strip_envd_secret_metadata(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            md = data.get("metadata")
+            if isinstance(md, dict) and "envd_access_token" in md:
+                md = {k: v for k, v in md.items() if k != "envd_access_token"}
+                data = {**data, "metadata": md}
+        return data
+
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "sandbox_id": "sb-abc123",
                 "state": "running",
@@ -28,7 +37,7 @@ class SandboxResponse(BaseModel):
                 "metadata": {"purpose": "testing"},
                 "container_id": "abc123...",
             }
-        }
+        })
 
 
 class SandboxLifecycleResponse(BaseModel):
@@ -37,6 +46,18 @@ class SandboxLifecycleResponse(BaseModel):
     sandbox_id: str
     state: str
     running: bool
+    timeout_seconds: Optional[int] = Field(
+        default=None,
+        description="Recorded lease / wall-clock budget from create (refreshed via POST …/timeout).",
+    )
+
+
+class SandboxTimeoutRefreshResponse(BaseModel):
+    """Ack after refreshing stored sandbox timeout (E2B ``set_timeout`` parity)."""
+
+    sandbox_id: str
+    timeout_seconds: int
+    refreshed: bool = Field(..., description="False if sandbox missing or not running")
 
 
 class SnapshotRecordResponse(BaseModel):
@@ -59,8 +80,34 @@ class TemplateDefinitionResponse(BaseModel):
     settle_seconds: int
     warm_snapshot_image: Optional[str] = None
     build_error: Optional[str] = None
+    ready_cmd: str = Field(default="", description="Readiness probe shell (E2B-style); empty if unused.")
     created_at: str
     updated_at: str
+
+
+class SandboxE2bConnectionResponse(BaseModel):
+    """Connection info for E2B-style clients: WebSocket URL + ``traffic_access_token``."""
+
+    sandbox_id: str = Field(..., description="Logical sandbox id")
+    agent_port: int = Field(default=8765, description="Upstream in-container agent WebSocket port")
+    ws_url: str = Field(..., description="Full ``wss://`` / ``ws://`` URL to this API's agent WS proxy")
+    traffic_access_token: str = Field(..., description="Send as header ``e2b-traffic-access-token`` when opening the WS")
+    e2b_style_host: str = Field(
+        ...,
+        description="Authority + path (no scheme) so ``f'wss://{e2b_style_host}'`` matches ``ws_url`` for legacy clients",
+    )
+
+
+class SandboxEnvdConnectionResponse(BaseModel):
+    """Direct HTTP access to the in-guest envd-style daemon (Docker published port)."""
+
+    sandbox_id: str
+    envd_port: int = Field(default=49983, description="In-container TCP port")
+    http_base_url: str = Field(
+        ...,
+        description="Base URL (no trailing slash) for ``GET/POST /files`` and ``/v1/*`` on the **host** mapped port",
+    )
+    access_token: str = Field(..., description="Send as header ``X-Access-Token`` to the guest daemon")
 
 
 class CommandResponse(BaseModel):
@@ -71,8 +118,7 @@ class CommandResponse(BaseModel):
     pid: int = Field(..., description="Process ID")
     execution_time: float = Field(..., description="Execution time in seconds")
 
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "exit_code": 0,
                 "stdout": "Hello, World!",
@@ -80,7 +126,7 @@ class CommandResponse(BaseModel):
                 "pid": 1234,
                 "execution_time": 0.123
             }
-        }
+        })
 
 
 class FileEntryResponse(BaseModel):
@@ -92,8 +138,7 @@ class FileEntryResponse(BaseModel):
     permissions: str = Field(..., description="Symbolic mode from ls (e.g. drwxr-xr-x)")
     modified_at: str = Field(default="", description="mtime columns from ls when available")
 
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "path": "/tmp/file.txt",
                 "name": "file.txt",
@@ -102,7 +147,7 @@ class FileEntryResponse(BaseModel):
                 "permissions": "-rw-r--r--",
                 "modified_at": "Jun 4 12:00",
             }
-        }
+        })
 
 
 class ListFilesResponse(BaseModel):
@@ -110,13 +155,12 @@ class ListFilesResponse(BaseModel):
     path: str = Field(..., description="Directory path")
     entries: List[FileEntryResponse] = Field(..., description="File entries")
 
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "path": "/tmp",
                 "entries": []
             }
-        }
+        })
 
 
 class WriteFileResponse(BaseModel):
@@ -125,14 +169,13 @@ class WriteFileResponse(BaseModel):
     bytes_written: int = Field(..., description="Bytes written")
     success: bool = Field(..., description="Success status")
 
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "path": "/tmp/file.txt",
                 "bytes_written": 1024,
                 "success": True
             }
-        }
+        })
 
 
 class AgentResponse(BaseModel):
@@ -144,8 +187,7 @@ class AgentResponse(BaseModel):
     config: Optional[Dict[str, Any]] = Field(default={}, description="Agent config")
     last_heartbeat: Optional[str] = Field(default=None, description="Last heartbeat")
 
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "agent_id": "agent-123",
                 "agent_name": "echo_agent",
@@ -154,7 +196,7 @@ class AgentResponse(BaseModel):
                 "config": {"debug": True},
                 "last_heartbeat": "2024-01-01T00:05:00Z"
             }
-        }
+        })
 
 
 class AgentMessageResponse(BaseModel):
@@ -166,8 +208,7 @@ class AgentMessageResponse(BaseModel):
     timestamp: str = Field(..., description="Timestamp")
     processed: bool = Field(..., description="Processed status")
 
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "agent_id": "agent-123",
                 "message_id": "msg-456",
@@ -176,7 +217,7 @@ class AgentMessageResponse(BaseModel):
                 "timestamp": "2024-01-01T00:00:00Z",
                 "processed": True
             }
-        }
+        })
 
 
 class ErrorResponse(BaseModel):
@@ -186,12 +227,11 @@ class ErrorResponse(BaseModel):
     status_code: int = Field(..., description="HTTP status code")
     details: Optional[Dict[str, Any]] = Field(default=None, description="Additional details")
 
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "error": "SandboxNotFoundException",
                 "message": "Sandbox not found",
                 "status_code": 404,
                 "details": {"sandbox_id": "sb-123"}
             }
-        }
+        })

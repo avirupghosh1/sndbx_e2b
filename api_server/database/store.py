@@ -129,8 +129,19 @@ class Database:
                 )
             """)
 
+            self._migrate_templates_ready_cmd(cursor)
+
             conn.commit()
             conn.close()
+
+    @staticmethod
+    def _migrate_templates_ready_cmd(cursor) -> None:
+        cursor.execute("PRAGMA table_info(sandbox_templates)")
+        cols = [r[1] for r in cursor.fetchall()]
+        if cols and "ready_cmd" not in cols:
+            cursor.execute(
+                "ALTER TABLE sandbox_templates ADD COLUMN ready_cmd TEXT NOT NULL DEFAULT ''"
+            )
 
     def create_sandbox(
         self,
@@ -257,6 +268,21 @@ class Database:
             conn.close()
         return rowcount > 0
 
+    def update_sandbox_timeout(self, sandbox_id: str, timeout_seconds: int) -> bool:
+        """Update recorded sandbox lease timeout (seconds)."""
+        now = datetime.utcnow().isoformat() + "Z"
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE sandboxes SET timeout = ?, updated_at = ? WHERE sandbox_id = ?",
+                (int(timeout_seconds), now, sandbox_id),
+            )
+            n = cursor.rowcount
+            conn.commit()
+            conn.close()
+        return n > 0
+
     def delete_sandbox(self, sandbox_id: str) -> bool:
         """Delete sandbox."""
         with self._lock:
@@ -340,6 +366,8 @@ class Database:
 
     @staticmethod
     def _template_dict_from_row(row: tuple) -> Dict[str, Any]:
+        n = len(row)
+        ready_cmd = (row[9] if n > 9 else "") or ""
         return {
             "template_id": row[0],
             "base_image": row[1],
@@ -350,6 +378,7 @@ class Database:
             "build_error": row[6],
             "created_at": row[7],
             "updated_at": row[8],
+            "ready_cmd": ready_cmd,
         }
 
     def upsert_sandbox_template(
@@ -359,11 +388,13 @@ class Database:
         env: Optional[Dict[str, Any]] = None,
         start_cmd: str = "",
         settle_seconds: int = 20,
+        ready_cmd: str = "",
     ) -> Dict[str, Any]:
         """Register or replace a logical template (Docker: used for one-time warm snapshot build)."""
         now = datetime.utcnow().isoformat() + "Z"
         env_json = json.dumps(env or {})
         settle_seconds = max(0, min(int(settle_seconds), 600))
+        ready_cmd = (ready_cmd or "").strip()
 
         with self._lock:
             conn = sqlite3.connect(self.db_path)
@@ -374,21 +405,30 @@ class Database:
                 cursor.execute(
                     """
                     UPDATE sandbox_templates
-                    SET base_image = ?, env_json = ?, start_cmd = ?, settle_seconds = ?,
+                    SET base_image = ?, env_json = ?, start_cmd = ?, settle_seconds = ?, ready_cmd = ?,
                         warm_snapshot_image = NULL, build_error = NULL, updated_at = ?
                     WHERE template_id = ?
                     """,
-                    (base_image, env_json, start_cmd, settle_seconds, now, template_id),
+                    (base_image, env_json, start_cmd, settle_seconds, ready_cmd, now, template_id),
                 )
             else:
                 cursor.execute(
                     """
                     INSERT INTO sandbox_templates
-                    (template_id, base_image, env_json, start_cmd, settle_seconds,
+                    (template_id, base_image, env_json, start_cmd, settle_seconds, ready_cmd,
                      warm_snapshot_image, build_error, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)
                     """,
-                    (template_id, base_image, env_json, start_cmd, settle_seconds, now, now),
+                    (
+                        template_id,
+                        base_image,
+                        env_json,
+                        start_cmd,
+                        settle_seconds,
+                        ready_cmd,
+                        now,
+                        now,
+                    ),
                 )
             conn.commit()
             conn.close()

@@ -1,0 +1,41 @@
+# =============================================================================
+# Minimal push: track only ``README.md``, ``api_server/``, ``my_sandbox_sdk/`` (+ root ``.env.example``)
+# =============================================================================
+# ``/*`` ignores every top-level path; ``!`` opt-ins what you push. Add more with e.g. ``!/ws_chat_probe.py``.
+# =============================================================================
+
+/*
+!README.md
+!/.gitignore
+!/.env.example
+!/api_server/
+!/my_sandbox_sdk/
+
+# Secrets & local (still ignored inside the folders above)
+.env
+.env.local
+api_server/.env
+my_sandbox_sdk/.env
+*.db
+*.log
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+**/venv/
+dist/
+build/
+*.egg-info/
+**/.DS_Store
+.idea/
+.vscode/
+
+# Optional: uncomment to track from this repo
+# !/ws_chat_probe.py
+# !/check_Code.py
+# !/examples/
+# !/e2b_shim/
+# !/docs/
